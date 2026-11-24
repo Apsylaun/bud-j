@@ -41,3 +41,25 @@ Astuce : sur le compte commun, créer la règle `nom prénom` → *Vir. compte c
 ## Ajouter une banque
 
 `lib/parsers.js` → `parseBankCsv` (détection d’en-tête + sens des montants). Fournir un export anonymisé.
+
+---
+
+# Zip 2 — pots
+
+**Mise à jour** : extraire le zip par-dessus le dépôt (écrase les fichiers modifiés), puis :
+1. Supabase → SQL Editor → coller `supabase/002_pots.sql` → Run.
+2. `git push` : Vercel redéploie.
+3. Page **Pots** → « Créer les pots par défaut ».
+
+Fichiers modifiés : `components/Shell.js`, `app/page.js`, `app/transactions/page.js`, `app/globals.css`, `lib/analytics.js`, `lib/categories.js`. Nouveaux : `app/pots/page.js`, `components/PotSplit.js`, `lib/pots.js`, `supabase/002_pots.sql`.
+
+## Fonctionnement
+
+- **Excédent du mois** = revenus − dépenses des comptes perso (virements vers le commun inclus), hors part payée par des pots.
+- **Clôture** (onglet Mois) : excédent > 0 réparti selon les % ; « Reste » absorbe l’écart. Excédent < 0 : débité du pot Imprévu. Les % du mois précédent sont repris par défaut.
+- **Réajuster un mois passé** : choisir le mois, modifier les %, « Recalculer et enregistrer ». Tous les soldes sont recalculés.
+- **Dépense payée par un pot** : page Opérations, bouton « Pot » (dépenses des comptes perso). Répartition possible sur plusieurs pots, partielle ou totale. Le pot peut passer en négatif (alerte).
+  Elle reste dans les graphes par catégorie ; case « Exclure les dépenses payées par un pot » sur l’Accueil pour la retirer.
+- **Sous-pots / projets** : Gérer → Ajouter → « Sous-pot de… », puis Mouvements → Déplacer (pot → sous-pot). Le total du pot ne change pas.
+- **Soldes initiaux** : Mouvements → date d’ouverture + montants.
+- **Sankey** (Accueil, vue Perso, case cochée, mois clôturés) : l’excédent est réparti par pots.

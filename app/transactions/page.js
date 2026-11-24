@@ -6,6 +6,8 @@ import { CATEGORIES } from '../../lib/categories.js';
 import { suggestPattern, norm } from '../../lib/rules.js';
 import { eur, dateFr, resolvePeriod } from '../../lib/format.js';
 import { PeriodPicker } from '../../components/Filters.js';
+import PotSplit from '../../components/PotSplit.js';
+import { loadPots, loadEntries, ownBalances, buildTree, flatNodes, fundedByTx } from '../../lib/pots.js';
 
 const PAGE = 100;
 
@@ -19,6 +21,8 @@ export default function Operations() {
   const [limit, setLimit] = useState(PAGE);
   const [msg, setMsg] = useState('');
   const [tick, setTick] = useState(0);
+  const [potData, setPotData] = useState(null); // null = pots non installés
+  const [splitFor, setSplitFor] = useState(null);
   const [state, setState] = useState({ loading: true, error: null });
 
   useEffect(() => {
@@ -29,8 +33,12 @@ export default function Operations() {
   useEffect(() => {
     let off = false;
     setState({ loading: true, error: null });
-    Promise.all([loadAccounts(), loadTransactions({ ...range, select: 'id,account_id,date,label,amount,category,cat_source' })])
-      .then(([a, t]) => { if (!off) { setAccounts(a); setTxs(t); setState({ loading: false, error: null }); } })
+    Promise.all([
+      loadAccounts(),
+      loadTransactions({ ...range, select: 'id,account_id,date,label,amount,category,cat_source' }),
+      Promise.all([loadPots(), loadEntries()]).catch(() => null),
+    ])
+      .then(([a, t, p]) => { if (!off) { setAccounts(a); setTxs(t); setPotData(p && p[0].length ? { pots: p[0], entries: p[1] } : null); setState({ loading: false, error: null }); } })
       .catch((e) => { if (!off) setState({ loading: false, error: e.message }); });
     return () => { off = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -44,6 +52,15 @@ export default function Operations() {
     return txs.filter((t) =>
       (!accountId || t.account_id === accountId) && (!todo || !t.category) && (!nq || norm(t.label).includes(nq)));
   }, [txs, accountId, todo, q]);
+
+  const potTree = useMemo(() => (potData ? buildTree(potData.pots, ownBalances(potData.entries)) : []), [potData]);
+  const potNodes = useMemo(() => flatNodes(potTree), [potTree]);
+  const funded = useMemo(() => (potData ? fundedByTx(potData.entries) : {}), [potData]);
+  const spendLines = (id) => {
+    const m = {};
+    for (const e of potData.entries) if (e.kind === 'spend' && e.transaction_id === id) m[e.pot_id] = (m[e.pot_id] || 0) - Number(e.amount);
+    return Object.entries(m).map(([pot_id, amount]) => ({ pot_id, amount: Math.round(amount * 100) / 100 }));
+  };
 
   async function setCategory(t, category) {
     const patch = category ? { category, cat_source: 'manual' } : { category: null, cat_source: null };
@@ -100,8 +117,17 @@ export default function Operations() {
                         {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                       </select>
                       <button className="btn ghost" onClick={() => addRule(t)} title="Appliquer cette catégorie à tous les libellés similaires">Règle</button>
+                      {potData && t.amount < 0 && !accById[t.account_id]?.shared && (
+                        <button className="btn ghost" onClick={() => setSplitFor(splitFor === t.id ? null : t.id)} title="Payer avec un ou plusieurs pots">
+                          {funded[t.id] ? `Pot ${eur(funded[t.id])}` : 'Pot'}
+                        </button>
+                      )}
                     </span>
                   </div>
+                  {splitFor === t.id && (
+                    <PotSplit tx={t} nodes={potNodes} existing={spendLines(t.id)}
+                      onDone={() => { setSplitFor(null); setTick((n) => n + 1); }} onCancel={() => setSplitFor(null)} />
+                  )}
                 </li>
               ))}
             </ul>

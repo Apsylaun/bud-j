@@ -7,6 +7,7 @@ import { CATEGORIES, INCOME, TRANSFER_INTERNE, UNCATEGORIZED, colorOf } from '..
 import { eur, resolvePeriod } from '../lib/format.js';
 import { PeriodPicker, Seg } from '../components/Filters.js';
 import { CategoryPie, FlowSankey, TrendLines, PivotTable } from '../components/Charts.js';
+import { loadPots, loadEntries, loadPotMonths, fundedByTx, allocBreakdown } from '../lib/pots.js';
 
 const SCOPES = [['perso', 'Perso'], ['commun', 'Commun'], ['consolide', 'Consolidé']];
 const HINTS = {
@@ -24,22 +25,33 @@ export default function Dashboard() {
   const [scope, setScope] = useState('perso');
   const [cats, setCats] = useState([]);
   const [tab, setTab] = useState('repartition');
+  const [pd, setPd] = useState({ pots: [], entries: [], months: [] });
+  const [excl, setExcl] = useState(false);
   const [state, setState] = useState({ loading: true, error: null });
 
   const range = resolvePeriod(period);
   useEffect(() => {
     let off = false;
     setState({ loading: true, error: null });
-    Promise.all([loadAccounts(), loadTransactions({ ...range, select: 'account_id,date,amount,category' })])
-      .then(([a, t]) => { if (!off) { setAccounts(a); setTxs(t); setState({ loading: false, error: null }); } })
+    Promise.all([
+      loadAccounts(),
+      loadTransactions({ ...range, select: 'id,account_id,date,amount,category' }),
+      Promise.all([loadPots(), loadEntries(), loadPotMonths()]).catch(() => [[], [], []]),
+    ])
+      .then(([a, t, p]) => { if (!off) { setAccounts(a); setTxs(t); setPd({ pots: p[0], entries: p[1], months: p[2] }); setState({ loading: false, error: null }); } })
       .catch((e) => { if (!off) setState({ loading: false, error: e.message }); });
     return () => { off = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range.from, range.to]);
 
   const byId = useMemo(() => Object.fromEntries(accounts.map((a) => [a.id, a])), [accounts]);
-  const allRows = useMemo(() => summarize(txs, byId, scope, null), [txs, byId, scope]);
-  const rows = useMemo(() => summarize(txs, byId, scope, new Set(cats)), [txs, byId, scope, cats]);
+  const funded = useMemo(() => (excl ? fundedByTx(pd.entries) : null), [excl, pd.entries]);
+  const allRows = useMemo(() => summarize(txs, byId, scope, null, funded), [txs, byId, scope, funded]);
+  const rows = useMemo(() => summarize(txs, byId, scope, new Set(cats), funded), [txs, byId, scope, cats, funded]);
+  const alloc = useMemo(
+    () => (scope === 'perso' && excl ? allocBreakdown([...new Set(allRows.map((r) => r.month))], pd.months, pd.entries, pd.pots) : null),
+    [scope, excl, allRows, pd]
+  );
   const kpi = totals(allRows);
   const todo = txs.filter((t) => !t.category && byId[t.account_id] && inScope(byId[t.account_id], scope)).length;
   const toggle = (c) => setCats((cs) => (cs.includes(c) ? cs.filter((x) => x !== c) : [...cs, c]));
@@ -89,6 +101,12 @@ export default function Dashboard() {
         {cats.length > 0 && <button className="chip" onClick={() => setCats([])}>Tout afficher</button>}
       </div>
 
+      {pd.pots.length > 0 && (
+        <label className="check" style={{ margin: '8px 0' }}>
+          <input type="checkbox" checked={excl} onChange={(e) => setExcl(e.target.checked)} /> Exclure les dépenses payées par un pot
+        </label>
+      )}
+
       <div className="tabs" role="tablist">
         {TABS.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}
       </div>
@@ -96,7 +114,10 @@ export default function Dashboard() {
         {state.loading ? <p className="muted">Chargement…</p> : (
           <>
             {tab === 'repartition' && <CategoryPie data={agg(rows, 'expense').filter((d) => d.value > 0)} />}
-            {tab === 'flux' && <FlowSankey data={sankey(rows)} />}
+            {tab === 'flux' && <FlowSankey data={sankey(rows, alloc)} />}
+            {tab === 'flux' && scope === 'perso' && pd.pots.length > 0 && !alloc && (
+              <p className="hint">Pour voir l’excédent réparti par pots : coche « Exclure les dépenses payées par un pot » et clôture les mois concernés.</p>
+            )}
             {tab === 'evolution' && <TrendLines data={trend.data} series={trend.series} />}
             {tab === 'tableau' && <PivotTable data={pivot(rows)} />}
           </>

@@ -94,3 +94,19 @@ select.todo{border-color:var(--warn-ink)}
 table.prev{width:100%;border-collapse:collapse;font-size:13px}
 .prev td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top}
 .prev td:last-child{text-align:right;white-space:nowrap}
+
+/* Pots */
+.split{padding:10px 0 4px}
+.num{width:96px;text-align:right}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
+.neg{color:var(--err)}
+.potgroup{border-bottom:1px solid var(--line)}
+.potgroup:last-child{border-bottom:0}
+.potline{display:grid;grid-template-columns:12px 1fr auto;gap:10px;align-items:center;width:100%;background:none;border:0;padding:12px 14px;cursor:pointer;text-align:left;font-variant-numeric:tabular-nums}
+.potline.kid{padding-left:34px;font-size:14px}
+.potline b{font-weight:600}
+.potline .track{grid-column:2/-1;height:5px;border-radius:3px;background:var(--line);overflow:hidden}
+.potline .track span{display:block;height:100%}
+.kidhint{margin:-6px 14px 6px 34px;font-size:13px}
+.detail{padding:0 14px 10px}
+.item.kid{padding-left:20px}

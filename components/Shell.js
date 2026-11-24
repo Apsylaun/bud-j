@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { getSupabase } from '../lib/supabase.js';
 
-const NAV = [['/', 'Tableau de bord'], ['/transactions', 'Opérations'], ['/import', 'Import'], ['/reglages', 'Réglages']];
+const NAV = [['/', 'Accueil'], ['/transactions', 'Opérations'], ['/import', 'Import'], ['/pots', 'Pots'], ['/reglages', 'Réglages']];
 
 function Login() {
   const [email, setEmail] = useState('');
