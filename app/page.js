@@ -6,6 +6,7 @@ import { summarize, totals, agg, byMonth, pivot, sankey, seriesByCategory, inSco
 import { CATEGORIES, INCOME, TRANSFER_INTERNE, UNCATEGORIZED, colorOf } from '../lib/categories.js';
 import { eur, resolvePeriod } from '../lib/format.js';
 import { PeriodPicker, Seg } from '../components/Filters.js';
+import { useUser } from '../components/User.js';
 import { CategoryPie, FlowSankey, TrendLines, PivotTable } from '../components/Charts.js';
 import { loadPots, loadEntries, loadPotMonths, fundedByTx, allocBreakdown } from '../lib/pots.js';
 
@@ -19,6 +20,7 @@ const TABS = [['repartition', 'Répartition'], ['flux', 'Flux'], ['evolution', '
 const FILTER_CATS = [...CATEGORIES.filter((c) => !INCOME.includes(c) && c !== TRANSFER_INTERNE), UNCATEGORIZED];
 
 export default function Dashboard() {
+  const { name } = useUser();
   const [accounts, setAccounts] = useState([]);
   const [txs, setTxs] = useState([]);
   const [period, setPeriod] = useState({ preset: '3m' });
@@ -73,7 +75,7 @@ export default function Dashboard() {
 
   return (
     <>
-      <h1>Tableau de bord</h1>
+      <h1>Tableau de bord{name ? ` ${name}` : ''}</h1>
       <div className="bar">
         <Seg value={scope} onChange={setScope} options={SCOPES} />
         <PeriodPicker value={period} onChange={setPeriod} />

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { getSupabase } from '../lib/supabase.js';
+import { UserContext, displayName } from './User.js';
 
 const NAV = [['/', 'Accueil'], ['/transactions', 'Opérations'], ['/import', 'Import'], ['/pots', 'Pots'], ['/patrimoine', 'Patrimoine'], ['/reglages', 'Réglages']];
 
@@ -59,7 +60,7 @@ export default function Shell({ children }) {
           <Link key={href} href={href} className={(href === '/' ? path === '/' : path.startsWith(href)) ? 'on' : ''}>{label}</Link>
         ))}
       </nav>
-      <main className="main">{children}</main>
+      <main className="main"><UserContext.Provider value={{ name: displayName(session.user) }}>{children}</UserContext.Provider></main>
     </div>
   );
 }

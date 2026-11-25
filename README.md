@@ -84,3 +84,10 @@ Nouveaux : `app/patrimoine/page.js`, `lib/wealth.js`, `supabase/003_placements.s
 ## Cours automatiques (PEA) — à venir
 
 Les colonnes `isin`, `ticker`, `quantity` et `asset_values.price/source` sont déjà prêtes. L’étape suivante sera une tâche planifiée Vercel qui lit les cours via une API et enregistre un relevé quotidien (`source = 'api'`), sans toucher à la saisie manuelle.
+
+---
+
+## Correctifs
+
+- `supabase/004_grants.sql` : à exécuter si une erreur « permission denied for table … » apparaît (droits d’accès aux tables manquants selon la configuration Supabase).
+- Le titre de l’Accueil affiche le prénom tiré de l’email (`yann.martin@…` → « Yann »). Pour forcer un prénom : Supabase → Authentication → Users → utilisateur → *User Metadata* → `{"display_name": "Yann"}`.
