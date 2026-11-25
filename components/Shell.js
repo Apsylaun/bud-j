@@ -3,9 +3,13 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { getSupabase } from '../lib/supabase.js';
+import { loadCategories } from '../lib/data.js';
 import { UserContext, displayName } from './User.js';
 
-const NAV = [['/', 'Accueil'], ['/transactions', 'Opérations'], ['/import', 'Import'], ['/pots', 'Pots'], ['/patrimoine', 'Patrimoine'], ['/reglages', 'Réglages']];
+const NAV = [
+  ['/', 'Accueil'], ['/transactions', 'Opérations'], ['/import', 'Import'],
+  ['/pots', 'Pots'], ['/patrimoine', 'Patrimoine'], ['/reglages', 'Réglages'],
+];
 
 function Login() {
   const [email, setEmail] = useState('');
@@ -23,7 +27,7 @@ function Login() {
 
   return (
     <form className="login" onSubmit={submit}>
-      <h1>Comptes</h1>
+      <h1>Bud-J</h1>
       <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
       <input type="password" placeholder="Mot de passe" value={pwd} onChange={(e) => setPwd(e.target.value)} autoComplete="current-password" required />
       <button className="btn" disabled={busy}>Se connecter</button>
@@ -35,7 +39,9 @@ function Login() {
 export default function Shell({ children }) {
   const [session, setSession] = useState(undefined);
   const [fatal, setFatal] = useState('');
+  const [ready, setReady] = useState(false);
   const path = usePathname();
+  const uid = session ? session.user.id : null;
 
   useEffect(() => {
     try {
@@ -48,19 +54,31 @@ export default function Shell({ children }) {
     }
   }, []);
 
+  useEffect(() => {
+    if (!uid) { setReady(false); return; }
+    let off = false;
+    loadCategories().then(() => { if (!off) setReady(true); });
+    return () => { off = true; };
+  }, [uid]);
+
   if (fatal) return <div className="center err">{fatal}</div>;
   if (session === undefined) return <div className="center muted">Chargement…</div>;
   if (!session) return <Login />;
 
   return (
     <div className="app">
+      <header className="mobilebar">Bud-J</header>
       <nav className="nav">
-        <span className="brand">Comptes</span>
+        <span className="brand">Bud-J</span>
         {NAV.map(([href, label]) => (
           <Link key={href} href={href} className={(href === '/' ? path === '/' : path.startsWith(href)) ? 'on' : ''}>{label}</Link>
         ))}
       </nav>
-      <main className="main"><UserContext.Provider value={{ name: displayName(session.user) }}>{children}</UserContext.Provider></main>
+      <main className="main">
+        {ready
+          ? <UserContext.Provider value={{ name: displayName(session.user) }}>{children}</UserContext.Provider>
+          : <p className="muted">Chargement…</p>}
+      </main>
     </div>
   );
 }

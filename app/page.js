@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { loadAccounts, loadTransactions } from '../lib/data.js';
 import { summarize, totals, agg, byMonth, pivot, sankey, seriesByCategory, inScope } from '../lib/analytics.js';
-import { CATEGORIES, INCOME, TRANSFER_INTERNE, UNCATEGORIZED, colorOf } from '../lib/categories.js';
+import { UNCATEGORIZED, categoryList, colorOf } from '../lib/categories.js';
 import { eur, resolvePeriod } from '../lib/format.js';
 import { PeriodPicker, Seg } from '../components/Filters.js';
 import { useUser } from '../components/User.js';
@@ -17,7 +17,6 @@ const HINTS = {
   consolide: 'Perso + commun. Les virements vers le commun sont exclus pour éviter le double compte.',
 };
 const TABS = [['repartition', 'Répartition'], ['flux', 'Flux'], ['evolution', 'Évolution'], ['tableau', 'Tableau']];
-const FILTER_CATS = [...CATEGORIES.filter((c) => !INCOME.includes(c) && c !== TRANSFER_INTERNE), UNCATEGORIZED];
 
 export default function Dashboard() {
   const { name } = useUser();
@@ -30,6 +29,8 @@ export default function Dashboard() {
   const [pd, setPd] = useState({ pots: [], entries: [], months: [] });
   const [excl, setExcl] = useState(false);
   const [state, setState] = useState({ loading: true, error: null });
+
+  const filterCats = [...categoryList().filter((c) => c.kind === 'expense' || c.kind === 'transfer_commun').map((c) => c.name), UNCATEGORIZED];
 
   const range = resolvePeriod(period);
   useEffect(() => {
@@ -66,7 +67,7 @@ export default function Dashboard() {
     return {
       data: byMonth(allRows),
       series: [
-        { key: 'income', label: 'Revenus', color: '#2E7D5B' },
+        { key: 'income', label: 'Revenus', color: '#7C9A82' },
         { key: 'expense', label: 'Dépenses', color: '#D4574E' },
         { key: 'net', label: 'Solde', color: '#7A8FA6', dash: '5 4' },
       ],
@@ -90,19 +91,18 @@ export default function Dashboard() {
       <div className="strip">
         <div><span>Revenus</span><b>{eur(kpi.income)}</b></div>
         <div><span>Dépenses</span><b>{eur(kpi.expense)}</b></div>
-        <div><span>Solde</span><b className={kpi.net >= 0 ? 'pos' : ''}>{eur(kpi.net)}</b></div>
+        <div><span>Solde</span><b className={kpi.net < 0 ? 'neg' : 'pos'}>{eur(kpi.net)}</b></div>
       </div>
       {todo > 0 && (
         <div className="warn">{todo} opération{todo > 1 ? 's' : ''} à catégoriser. <Link href="/transactions?todo=1">Catégoriser</Link></div>
       )}
 
       <div className="chips" aria-label="Filtrer les dépenses par catégorie">
-        {FILTER_CATS.map((c) => (
-          <button key={c} className={'chip' + (cats.includes(c) ? ' on' : '')} onClick={() => toggle(c)}>{c}</button>
+        {filterCats.map((c) => (
+          <button key={c} className={'chip' + (cats.includes(c) ? ' on' : '')} style={{ '--c': colorOf(c) }} onClick={() => toggle(c)}>{c}</button>
         ))}
         {cats.length > 0 && <button className="chip" onClick={() => setCats([])}>Tout afficher</button>}
       </div>
-
       {pd.pots.length > 0 && (
         <label className="check" style={{ margin: '8px 0' }}>
           <input type="checkbox" checked={excl} onChange={(e) => setExcl(e.target.checked)} /> Exclure les dépenses payées par un pot
@@ -117,6 +117,7 @@ export default function Dashboard() {
           <>
             {tab === 'repartition' && <CategoryPie data={agg(rows, 'expense').filter((d) => d.value > 0)} />}
             {tab === 'flux' && <FlowSankey data={sankey(rows, alloc)} />}
+            {tab === 'flux' && kpi.net < 0 && <p className="hint">Le déficit ({eur(kpi.net)}) est ajouté aux revenus pour équilibrer les flux.</p>}
             {tab === 'flux' && scope === 'perso' && pd.pots.length > 0 && !alloc && (
               <p className="hint">Pour voir l’excédent réparti par pots : coche « Exclure les dépenses payées par un pot » et clôture les mois concernés.</p>
             )}

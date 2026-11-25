@@ -91,3 +91,17 @@ Les colonnes `isin`, `ticker`, `quantity` et `asset_values.price/source` sont d�
 
 - `supabase/004_grants.sql` : à exécuter si une erreur « permission denied for table … » apparaît (droits d’accès aux tables manquants selon la configuration Supabase).
 - Le titre de l’Accueil affiche le prénom tiré de l’email (`yann.martin@…` → « Yann »). Pour forcer un prénom : Supabase → Authentication → Users → utilisateur → *User Metadata* → `{"display_name": "Yann"}`.
+
+---
+
+# Bud-J — mise à jour design et fonctions
+
+**Mise à jour** : extraire le zip complet à la racine du dépôt (écrase tout), puis Supabase → SQL Editor → `supabase/005_budj.sql` → Run (une fois), `git push`.
+
+- **Design** : interface minimaliste, vert sauge, police système. Titre « Bud-J » en haut du menu, favicon 💰.
+- **Catégories** : tags colorés, modifiables dans Réglages (couleur, nom, nouveaux tags dépense ou revenu). Communs aux deux utilisateurs. Nouvelle catégorie par défaut : **Placement** (virements vers PEA / assurance vie, reconnus automatiquement).
+  Pour ne pas fausser l’excédent, impute ces virements au pot Investissement avec le bouton « Pot » de l’opération.
+- **Opérations** : colonne « Compte », modification et suppression d’une ligne, ajout manuel. Un déficit s’affiche en négatif ; dans le Sankey il est ajouté aux revenus.
+  Supprimer une ligne importée puis réimporter le même CSV la recrée.
+- **Pots** : tirelire par pot (remplissage = part de l’objectif), objectifs avec horizon et effort mensuel estimé.
+- **Patrimoine** : hiérarchie type de compte (courant / épargne / investissement) › enveloppe › actif. Import de portefeuille Bourse Direct (.xlsx ou .csv) depuis l’onglet Actifs : nouvelles lignes créées, lignes existantes mises à jour par ISIN, lignes absentes soldées si tu le souhaites.

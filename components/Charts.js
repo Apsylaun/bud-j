@@ -48,7 +48,7 @@ function SankeyNode({ x, y, width, height, payload }) {
         textAnchor={left ? 'end' : 'start'} fill="var(--ink)"
         stroke="var(--surface)" strokeWidth={3} paintOrder="stroke"
       >
-        {payload.name} {eur(payload.value)}
+        {payload.name} {payload.name === 'Déficit' ? '−' : ''}{eur(payload.value)}
       </text>
     </g>
   );
@@ -107,8 +107,8 @@ export function PivotTable({ data }) {
   const sumRow = (label, key, cls) => (
     <tr className={cls}>
       <td>{label}</td>
-      {months.map((m) => <td key={m}>{eur(tot[key][m])}</td>)}
-      <td>{eur(grand[key])}</td>
+      {months.map((m) => <td key={m} className={tot[key][m] < 0 ? 'neg' : ''}>{eur(tot[key][m])}</td>)}
+      <td className={grand[key] < 0 ? 'neg' : ''}>{eur(grand[key])}</td>
     </tr>
   );
   const sec = (t) => <tr className="sec"><td colSpan={months.length + 2}>{t}</td></tr>;

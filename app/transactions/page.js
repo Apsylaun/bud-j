@@ -2,14 +2,89 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getSupabase } from '../../lib/supabase.js';
 import { loadAccounts, loadTransactions, loadRules, reapplyRules } from '../../lib/data.js';
-import { CATEGORIES } from '../../lib/categories.js';
+import { categoryNames } from '../../lib/categories.js';
 import { suggestPattern, norm } from '../../lib/rules.js';
 import { eur, dateFr, resolvePeriod } from '../../lib/format.js';
 import { PeriodPicker } from '../../components/Filters.js';
+import { TagSelect } from '../../components/Tag.js';
 import PotSplit from '../../components/PotSplit.js';
 import { loadPots, loadEntries, ownBalances, buildTree, flatNodes, fundedByTx } from '../../lib/pots.js';
 
 const PAGE = 100;
+const today = () => new Date().toISOString().slice(0, 10);
+const num = (s) => Number(String(s).replace(',', '.')) || 0;
+
+function TxEditor({ tx, accounts, onSaved, onCancel }) {
+  const isNew = !tx;
+  const [f, setF] = useState(() => ({
+    date: tx ? tx.date : today(),
+    label: tx ? tx.label : '',
+    type: tx && tx.amount >= 0 ? 'in' : 'out',
+    amount: tx ? String(Math.abs(tx.amount)) : '',
+    account: tx ? tx.account_id : (accounts[0] ? accounts[0].id : ''),
+    category: tx ? tx.category || '' : '',
+  }));
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const set = (p) => setF((x) => ({ ...x, ...p }));
+
+  async function save(e) {
+    e.preventDefault(); setBusy(true); setErr('');
+    try {
+      const amount = (f.type === 'out' ? -1 : 1) * Math.abs(num(f.amount));
+      if (!amount) throw new Error('Montant invalide.');
+      if (!f.account) throw new Error('Choisis un compte.');
+      const sb = getSupabase();
+      const cat = f.category || null;
+      if (isNew) {
+        const { error } = await sb.from('transactions').insert({
+          account_id: f.account, date: f.date, label: f.label.trim(), amount, category: cat,
+          cat_source: cat ? 'manual' : null, hash: `manual:${crypto.randomUUID()}`,
+        });
+        if (error) throw error;
+      } else {
+        const patch = { account_id: f.account, date: f.date, label: f.label.trim(), amount, category: cat };
+        if (cat !== (tx.category || null)) patch.cat_source = cat ? 'manual' : null;
+        const { error } = await sb.from('transactions').update(patch).eq('id', tx.id);
+        if (error) throw error;
+      }
+      onSaved();
+    } catch (e2) { setErr(e2.message); setBusy(false); }
+  }
+
+  async function remove() {
+    if (!window.confirm('Supprimer cette opération ?')) return;
+    const { error } = await getSupabase().from('transactions').delete().eq('id', tx.id);
+    if (error) return setErr(error.message);
+    onSaved();
+  }
+
+  return (
+    <form className="panel formgrid" onSubmit={save}>
+      <div className="form">
+        <input type="date" value={f.date} onChange={(e) => set({ date: e.target.value })} required aria-label="Date" />
+        <select value={f.account} onChange={(e) => set({ account: e.target.value })} aria-label="Compte">
+          {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.shared ? ' (commun)' : ''}</option>)}
+        </select>
+      </div>
+      <input type="text" placeholder="Libellé" value={f.label} onChange={(e) => set({ label: e.target.value })} required />
+      <div className="form">
+        <select value={f.type} onChange={(e) => set({ type: e.target.value })} aria-label="Sens">
+          <option value="out">Dépense</option>
+          <option value="in">Revenu</option>
+        </select>
+        <input type="text" inputMode="decimal" className="num" placeholder="Montant €" value={f.amount} onChange={(e) => set({ amount: e.target.value })} required aria-label="Montant" />
+        <TagSelect value={f.category} onChange={(c) => set({ category: c })} options={categoryNames()} />
+      </div>
+      {err && <p className="err">{err}</p>}
+      <div className="form">
+        <button className="btn" disabled={busy}>{isNew ? 'Ajouter' : 'Enregistrer'}</button>
+        <button type="button" className="btn ghost" onClick={onCancel}>Annuler</button>
+        {!isNew && <button type="button" className="btn danger" onClick={remove}>Supprimer</button>}
+      </div>
+    </form>
+  );
+}
 
 export default function Operations() {
   const [accounts, setAccounts] = useState([]);
@@ -21,8 +96,9 @@ export default function Operations() {
   const [limit, setLimit] = useState(PAGE);
   const [msg, setMsg] = useState('');
   const [tick, setTick] = useState(0);
-  const [potData, setPotData] = useState(null); // null = pots non installés
+  const [potData, setPotData] = useState(null);
   const [splitFor, setSplitFor] = useState(null);
+  const [editFor, setEditFor] = useState(null); // id | 'new'
   const [state, setState] = useState({ loading: true, error: null });
 
   useEffect(() => {
@@ -83,6 +159,8 @@ export default function Operations() {
     } catch (e) { setMsg(e.message); }
   }
 
+  const done = () => { setEditFor(null); setTick((n) => n + 1); };
+
   return (
     <>
       <h1>Opérations</h1>
@@ -95,6 +173,9 @@ export default function Operations() {
         <label className="check"><input type="checkbox" checked={todo} onChange={(e) => setTodo(e.target.checked)} /> À catégoriser</label>
         <PeriodPicker value={period} onChange={setPeriod} />
       </div>
+      {accounts.length > 0 && (editFor === 'new'
+        ? <TxEditor accounts={accounts} onSaved={done} onCancel={() => setEditFor(null)} />
+        : <button className="btn ghost" onClick={() => setEditFor('new')}>Ajouter une opération</button>)}
 
       {msg && <div className="warn">{msg}</div>}
       {state.error && <p className="err">{state.error}</p>}
@@ -102,35 +183,38 @@ export default function Operations() {
         <>
           <p className="hint">{shown.length} opération{shown.length > 1 ? 's' : ''}</p>
           {shown.length === 0 ? <p className="muted">Rien à afficher.</p> : (
-            <ul className="list">
-              {shown.slice(0, limit).map((t) => (
-                <li key={t.id} className="tx">
-                  <div className="tx-main">
-                    <span className="tx-label">{t.label}</span>
-                    <span className={'amt' + (t.amount > 0 ? ' pos' : '')}>{eur(t.amount, 2)}</span>
-                  </div>
-                  <div className="tx-sub">
-                    <span className="tx-meta"><span>{dateFr(t.date)}</span><span>{accById[t.account_id]?.name}</span></span>
-                    <span className="tx-actions">
-                      <select className={t.category ? '' : 'todo'} value={t.category || ''} onChange={(e) => setCategory(t, e.target.value)} aria-label="Catégorie">
-                        <option value="">À catégoriser</option>
-                        {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                      <button className="btn ghost" onClick={() => addRule(t)} title="Appliquer cette catégorie à tous les libellés similaires">Règle</button>
-                      {potData && t.amount < 0 && !accById[t.account_id]?.shared && (
-                        <button className="btn ghost" onClick={() => setSplitFor(splitFor === t.id ? null : t.id)} title="Payer avec un ou plusieurs pots">
+            <>
+              <div className="txhead"><span>Date</span><span>Libellé</span><span>Compte</span><span>Catégorie</span><span>Montant</span><span /></div>
+              <ul className="list" style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0, borderTop: 0 }}>
+                {shown.slice(0, limit).map((t) => (
+                  <li key={t.id} className="txrow">
+                    <span className="c-date muted">{dateFr(t.date)}</span>
+                    <span className="c-label">{t.label}</span>
+                    <span className="c-acct muted">{accById[t.account_id] ? accById[t.account_id].name : ''}</span>
+                    <span className="c-cat"><TagSelect value={t.category || ''} onChange={(c) => setCategory(t, c)} options={categoryNames()} /></span>
+                    <span className={'c-amt amt' + (t.amount > 0 ? ' pos' : '')}>{eur(t.amount, 2)}</span>
+                    <span className="c-act">
+                      <button className="btn ghost sm" onClick={() => addRule(t)} title="Appliquer cette catégorie à tous les libellés similaires">Règle</button>
+                      {potData && t.amount < 0 && !(accById[t.account_id] && accById[t.account_id].shared) && (
+                        <button className="btn ghost sm" onClick={() => setSplitFor(splitFor === t.id ? null : t.id)} title="Payer avec un ou plusieurs pots">
                           {funded[t.id] ? `Pot ${eur(funded[t.id])}` : 'Pot'}
                         </button>
                       )}
+                      <button className="btn ghost sm" onClick={() => setEditFor(editFor === t.id ? null : t.id)}>Modifier</button>
                     </span>
-                  </div>
-                  {splitFor === t.id && (
-                    <PotSplit tx={t} nodes={potNodes} existing={spendLines(t.id)}
-                      onDone={() => { setSplitFor(null); setTick((n) => n + 1); }} onCancel={() => setSplitFor(null)} />
-                  )}
-                </li>
-              ))}
-            </ul>
+                    {editFor === t.id && (
+                      <div className="c-edit"><TxEditor tx={t} accounts={accounts} onSaved={done} onCancel={() => setEditFor(null)} /></div>
+                    )}
+                    {splitFor === t.id && (
+                      <div className="c-edit">
+                        <PotSplit tx={t} nodes={potNodes} existing={spendLines(t.id)}
+                          onDone={() => { setSplitFor(null); setTick((n) => n + 1); }} onCancel={() => setSplitFor(null)} />
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
           {shown.length > limit && <button className="btn ghost more" onClick={() => setLimit((l) => l + PAGE)}>Afficher plus</button>}
         </>

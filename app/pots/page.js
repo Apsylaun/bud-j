@@ -10,6 +10,7 @@ import {
 import { eur, dateFr, monthLabel } from '../../lib/format.js';
 import { colorOf } from '../../lib/categories.js';
 import { Seg } from '../../components/Filters.js';
+import PigBank from '../../components/PigBank.js';
 import { TrendLines } from '../../components/Charts.js';
 import { loadAssets, loadValues, groupValues, latest } from '../../lib/wealth.js';
 
@@ -109,6 +110,29 @@ function PotLine({ pot, balance, open, onToggle, entries, indent }) {
   );
 }
 
+const monthsLeft = (iso) => Math.max(1, Math.ceil((new Date(iso + 'T00:00:00Z') - new Date()) / (30.44 * 86400000)));
+
+function PigCard({ pot, maxBal }) {
+  const bal = pot.total;
+  const pct = pot.target ? bal / pot.target : maxBal > 0 ? bal / maxBal : 0;
+  const late = pot.target_date && new Date(pot.target_date + 'T00:00:00Z') < new Date();
+  const missing = pot.target ? pot.target - bal : 0;
+  return (
+    <div className="pig">
+      <PigBank fill={bal > 0 ? pct : 0} color={colorOf(pot.name)} negative={bal < 0} label={`Tirelire ${pot.name}`} />
+      <span className="pname">{pot.name}</span>
+      <b className={bal < 0 ? 'neg' : ''}>{eur(bal)}</b>
+      {pot.target ? <small>{Math.max(0, Math.round((bal / pot.target) * 100))} % de {eur(pot.target)}</small> : <small>Sans objectif</small>}
+      {pot.target_date && (
+        <small>
+          {late ? 'Échéance dépassée' : `avant ${monthLabel(pot.target_date.slice(0, 7))}`}
+          {!late && missing > 0 ? ` · ≈ ${eur(missing / monthsLeft(pot.target_date))}/mois` : ''}
+        </small>
+      )}
+    </div>
+  );
+}
+
 function ViewTab({ d, tree }) {
   const [open, setOpen] = useState({});
   const total = r2(tree.reduce((s, m) => s + m.total, 0));
@@ -116,8 +140,9 @@ function ViewTab({ d, tree }) {
   const negatives = nodes.filter((n) => n.balance < 0).length;
   const last = d.months.find((m) => m.closed);
   const series = useMemo(() => balanceSeries(tree, d.entries), [tree, d.entries]);
-  const lines = [...tree.map((m) => ({ key: m.name, label: m.name, color: colorOf(m.name) })), { key: 'Total', label: 'Total', color: '#14231F', dash: '5 4' }];
+  const lines = [...tree.map((m) => ({ key: m.name, label: m.name, color: colorOf(m.name) })), { key: 'Total', label: 'Total', color: '#7A8FA6', dash: '5 4' }];
   const tog = (id) => setOpen((o) => ({ ...o, [id]: !o[id] }));
+  const maxBal = Math.max(0, ...tree.map((m) => m.total));
   return (
     <>
       <div className="strip">
@@ -131,9 +156,12 @@ function ViewTab({ d, tree }) {
           {d.liquid - total < 0 ? ' Les pots dépassent tes liquidités : vérifie les soldes saisis.' : ' Les pots sont virtuels : cet écart est l’argent non affecté.'}
         </p>
       )}
+      <h2>Tirelires</h2>
+      <div className="pigs">{tree.map((m) => <PigCard key={m.id} pot={m} maxBal={maxBal} />)}</div>
+      <p className="hint">Remplissage : part de l’objectif, ou taille relative au plus gros pot si le pot n’a pas d’objectif.</p>
       <h2>Évolution</h2>
       <div className="panel"><TrendLines data={series} series={lines} /></div>
-      <h2>Pots</h2>
+      <h2>Détail</h2>
       <div className="list">
         {tree.map((m) => (
           <div className="potgroup" key={m.id}>
@@ -323,7 +351,9 @@ function MovesTab({ d, tree, reload }) {
 }
 
 function ManageTab({ d, tree, reload }) {
-  const [f, setF] = useState({ name: '', parent: '', target: '' });
+  const [f, setF] = useState({ name: '', parent: '', target: '', date: '' });
+  const [goalFor, setGoalFor] = useState(null);
+  const [g, setG] = useState({ target: '', date: '' });
   const [msg, setMsg] = useState('');
   const sb = getSupabase();
   const hasEntries = (id) => d.entries.some((e) => e.pot_id === id);
@@ -335,28 +365,53 @@ function ManageTab({ d, tree, reload }) {
   const add = (e) => {
     e.preventDefault();
     attempt(async () => {
-      const r = await sb.from('pots').insert({ name: f.name.trim(), parent_id: f.parent || null, target: f.target ? num(f.target) : null, sort: d.pots.length });
-      if (!r.error) setF({ name: '', parent: '', target: '' });
+      const r = await sb.from('pots').insert({
+        name: f.name.trim(), parent_id: f.parent || null, target: f.target ? num(f.target) : null,
+        target_date: f.date || null, sort: d.pots.length,
+      });
+      if (!r.error) setF({ name: '', parent: '', target: '', date: '' });
       return r;
     });
   };
   const rename = (p) => { const n = window.prompt('Nouveau nom :', p.name); if (n && n.trim()) attempt(() => sb.from('pots').update({ name: n.trim() }).eq('id', p.id)); };
-  const goal = (p) => {
-    const v = window.prompt('Objectif en € (vide = aucun) :', p.target ?? '');
-    if (v !== null) attempt(() => sb.from('pots').update({ target: v.trim() ? num(v) : null }).eq('id', p.id));
+  const openGoal = (p) => {
+    if (goalFor === p.id) return setGoalFor(null);
+    setGoalFor(p.id); setG({ target: p.target != null ? String(p.target) : '', date: p.target_date || '' });
+  };
+  const saveGoal = (p, clear) => {
+    attempt(async () => {
+      const r = await sb.from('pots').update(clear ? { target: null, target_date: null } : { target: g.target ? num(g.target) : null, target_date: g.date || null }).eq('id', p.id);
+      if (!r.error) setGoalFor(null);
+      return r;
+    });
   };
   const del = (p, kids) => {
     const warn = hasEntries(p.id) || kids ? ' Son historique (et celui de ses sous-pots) sera perdu.' : '';
     if (window.confirm(`Supprimer « ${p.name} » ?${warn}`)) attempt(() => sb.from('pots').delete().eq('id', p.id));
   };
   const row = (p, kids, indent) => (
-    <div className={'item' + (indent ? ' kid' : '')} key={p.id}>
-      <span>{p.name}{p.role === 'rest' && <span className="badge">absorbe l’écart</span>}{p.role === 'deficit' && <span className="badge">absorbe les déficits</span>}{p.target ? <span className="badge">objectif {eur(p.target)}</span> : null}</span>
-      <span className="form">
-        <button className="btn ghost" onClick={() => rename(p)}>Renommer</button>
-        <button className="btn ghost" onClick={() => goal(p)}>Objectif</button>
-        {!p.role && <button className="btn danger" onClick={() => del(p, kids)}>Supprimer</button>}
-      </span>
+    <div key={p.id}>
+      <div className={'item' + (indent ? ' kid' : '')}>
+        <span>
+          {p.name}
+          {p.role === 'rest' && <span className="badge">absorbe l’écart</span>}
+          {p.role === 'deficit' && <span className="badge">absorbe les déficits</span>}
+          {p.target ? <span className="badge">objectif {eur(p.target)}{p.target_date ? ` · avant ${monthLabel(p.target_date.slice(0, 7))}` : ''}</span> : null}
+        </span>
+        <span className="form">
+          <button className="btn ghost sm" onClick={() => rename(p)}>Renommer</button>
+          <button className="btn ghost sm" onClick={() => openGoal(p)}>Objectif</button>
+          {!p.role && <button className="btn danger sm" onClick={() => del(p, kids)}>Supprimer</button>}
+        </span>
+      </div>
+      {goalFor === p.id && (
+        <div className="form" style={{ padding: '6px 0 10px' }}>
+          <input type="text" inputMode="decimal" className="num" placeholder="Montant €" value={g.target} onChange={(e) => setG({ ...g, target: e.target.value })} aria-label="Objectif" />
+          <input type="date" value={g.date} onChange={(e) => setG({ ...g, date: e.target.value })} aria-label="Horizon" />
+          <button className="btn sm" onClick={() => saveGoal(p, false)}>Enregistrer</button>
+          <button className="btn ghost sm" onClick={() => saveGoal(p, true)}>Retirer l’objectif</button>
+        </div>
+      )}
     </div>
   );
 
@@ -375,9 +430,10 @@ function ManageTab({ d, tree, reload }) {
           {tree.map((m) => <option key={m.id} value={m.id}>Sous-pot de {m.name}</option>)}
         </select>
         <input type="text" inputMode="decimal" className="num" placeholder="Objectif €" value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} />
+        <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} aria-label="Horizon de l’objectif" />
         <button className="btn">Ajouter</button>
       </form>
-      <p className="hint">Seuls les pots principaux reçoivent une part de l’excédent mensuel. « Reste » et « Imprévu » sont obligatoires.</p>
+      <p className="hint">L’horizon sert à calculer l’effort mensuel restant sur la tirelire. Seuls les pots principaux reçoivent une part de l’excédent mensuel ; « Reste » et « Imprévu » sont obligatoires.</p>
     </>
   );
 }

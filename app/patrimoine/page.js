@@ -4,8 +4,9 @@ import { getSupabase } from '../../lib/supabase.js';
 import { loadAccounts, loadBalances } from '../../lib/data.js';
 import {
   TYPES, CLASSES, TYPE_CLASS, RANGES, loadAssets, loadValues, groupValues, latest, wealthSeries,
-  breakdown, gainOf, portfolioGain, project, r2, fmtPct,
+  breakdown, gainOf, portfolioGain, project, r2, fmtPct, KINDS, kindForType, guessType, buildAssetTree,
 } from '../../lib/wealth.js';
+import { readPositionsFile } from '../../lib/positions.js';
 import { eur, dateFr } from '../../lib/format.js';
 import { colorOf, paletteColor } from '../../lib/categories.js';
 import { Seg } from '../../components/Filters.js';
@@ -83,17 +84,17 @@ function VueTab({ d, g, lat, goTo }) {
       <p className="hint">Entre deux relevés, la dernière valeur connue est reportée : les courtes périodes sont plates tant que tu ne mets pas à jour plus souvent.</p>
 
       <h2>Répartition</h2>
-      <Seg value={by} onChange={setBy} options={[['class', 'Classe'], ['type', 'Type'], ['asset', 'Actif']]} />
+      <Seg value={by} onChange={setBy} options={[['class', 'Classe'], ['type', 'Type d’actif'], ['kind', 'Compte'], ['holder', 'Enveloppe'], ['asset', 'Actif']]} />
       <div className="panel" style={{ marginTop: 10 }}><CategoryPie data={slices} /></div>
     </>
   );
 }
 
-function AssetForm({ asset, accounts, onSaved, onCancel }) {
+function AssetForm({ asset, accounts, holders, onSaved, onCancel }) {
   const a = asset || {};
   const [f, setF] = useState({
-    name: a.name || '', type: a.asset_type || TYPES[1], cls: a.asset_class || TYPE_CLASS[TYPES[1]],
-    holder: a.holder || '', isin: a.isin || '', ticker: a.ticker || '',
+    name: a.name || '', type: a.asset_type || 'Livret', cls: a.asset_class || TYPE_CLASS.Livret,
+    kind: a.account_kind || 'Épargne', holder: a.holder || '', isin: a.isin || '', ticker: a.ticker || '',
     qty: a.quantity != null ? String(a.quantity) : '', pru: '', invested: a.invested != null ? String(a.invested) : '',
     account: a.account_id || '', value: '', date: today(),
   });
@@ -108,7 +109,7 @@ function AssetForm({ asset, accounts, onSaved, onCancel }) {
       const sb = getSupabase();
       const invested = f.invested !== '' ? num(f.invested) : f.qty !== '' && f.pru !== '' ? r2(num(f.qty) * num(f.pru)) : null;
       const row = {
-        name: f.name.trim(), asset_type: f.type, asset_class: f.cls, holder: f.holder.trim() || null,
+        name: f.name.trim(), asset_type: f.type, asset_class: f.cls, account_kind: f.kind, holder: f.holder.trim() || null,
         isin: f.isin.trim() || null, ticker: f.ticker.trim() || null,
         quantity: f.qty !== '' ? num(f.qty) : null, invested, account_id: f.account || null,
       };
@@ -129,16 +130,22 @@ function AssetForm({ asset, accounts, onSaved, onCancel }) {
 
   return (
     <form className="panel formgrid" onSubmit={submit}>
-      <input type="text" placeholder="Nom (ex : Livret A, ETF MSCI World)" value={f.name} onChange={(e) => set({ name: e.target.value })} required />
       <div className="form">
-        <select value={f.type} onChange={(e) => set({ type: e.target.value, cls: TYPE_CLASS[e.target.value] })} aria-label="Type">
+        <select value={f.kind} onChange={(e) => set({ kind: e.target.value })} aria-label="Type de compte">
+          {KINDS.map((k) => <option key={k}>{k}</option>)}
+        </select>
+        <input type="text" list="holders" placeholder="Enveloppe (PEA, Assurance vie, Livret A…)" value={f.holder} onChange={(e) => set({ holder: e.target.value })} />
+        <datalist id="holders">{holders.map((h) => <option key={h} value={h} />)}</datalist>
+      </div>
+      <input type="text" placeholder="Nom de l’actif (ex : ETF MSCI World)" value={f.name} onChange={(e) => set({ name: e.target.value })} required />
+      <div className="form">
+        <select value={f.type} onChange={(e) => set({ type: e.target.value, cls: TYPE_CLASS[e.target.value], kind: kindForType(e.target.value) })} aria-label="Type d’actif">
           {TYPES.map((t) => <option key={t}>{t}</option>)}
         </select>
         <select value={f.cls} onChange={(e) => set({ cls: e.target.value })} aria-label="Classe">
           {CLASSES.map((c) => <option key={c}>{c}</option>)}
         </select>
       </div>
-      <input type="text" placeholder="Enveloppe / établissement (ex : PEA Bourse Direct)" value={f.holder} onChange={(e) => set({ holder: e.target.value })} />
       {!asset && (
         <div className="form">
           <input type="text" inputMode="decimal" className="num" placeholder="Valeur €" value={f.value} onChange={(e) => set({ value: e.target.value })} aria-label="Valeur actuelle" />
@@ -156,7 +163,7 @@ function AssetForm({ asset, accounts, onSaved, onCancel }) {
         {persoAccounts.map((x) => <option key={x.id} value={x.id}>{x.name} ({x.bank})</option>)}
       </select>
       <details>
-        <summary className="muted">Cours automatiques (plus tard)</summary>
+        <summary>Cours automatiques (plus tard)</summary>
         <div className="form" style={{ marginTop: 8 }}>
           <input type="text" placeholder="ISIN" value={f.isin} onChange={(e) => set({ isin: e.target.value })} />
           <input type="text" placeholder="Ticker" value={f.ticker} onChange={(e) => set({ ticker: e.target.value })} />
@@ -171,14 +178,129 @@ function AssetForm({ asset, accounts, onSaved, onCancel }) {
   );
 }
 
+// Regroupe les lignes d'un même ISIN (quantités, valeurs et montants investis additionnés).
+function mergeByIsin(list) {
+  const m = new Map();
+  for (const p of list) {
+    const x = m.get(p.isin);
+    if (!x) { m.set(p.isin, { ...p }); continue; }
+    x.quantity += p.quantity; x.value = r2(x.value + p.value);
+    x.invested = x.invested != null && p.invested != null ? r2(x.invested + p.invested) : null;
+    x.price = p.price ?? x.price;
+  }
+  return [...m.values()];
+}
+
+function ImportPositions({ assets, lat, holders, onDone, onCancel }) {
+  const [holder, setHolder] = useState('PEA');
+  const [kind, setKind] = useState('Investissement');
+  const [date, setDate] = useState(today());
+  const [closeMissing, setCloseMissing] = useState(true);
+  const [pos, setPos] = useState(null);
+  const [fileName, setFileName] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function onFile(e) {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    setErr(''); setPos(null); setFileName(f.name);
+    try { setPos(mergeByIsin(await readPositionsFile(f))); } catch (x) { setErr(x.message); }
+  }
+
+  const same = (h) => (h || '').trim().toLowerCase() === holder.trim().toLowerCase();
+  const inHolder = assets.filter((a) => same(a.holder));
+  const plan = useMemo(
+    () => (pos ? pos.map((p) => ({ ...p, existing: inHolder.find((a) => a.isin === p.isin) || null })) : []),
+    [pos, assets, holder] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const absent = pos ? inHolder.filter((a) => a.isin && !pos.some((p) => p.isin === a.isin) && lat[a.id] && lat[a.id].value > 0) : [];
+  const total = r2(plan.reduce((s, p) => s + p.value, 0));
+
+  async function run() {
+    setBusy(true); setErr('');
+    try {
+      const sb = getSupabase();
+      const holderName = holder.trim() || null;
+      const toCreate = plan.filter((p) => !p.existing);
+      let created = [];
+      if (toCreate.length) {
+        const rows = toCreate.map((p) => {
+          const type = guessType(p.name);
+          return { name: p.name, asset_type: type, asset_class: TYPE_CLASS[type], account_kind: kind, holder: holderName, isin: p.isin, quantity: p.quantity, invested: p.invested };
+        });
+        const r = await sb.from('assets').insert(rows).select('id,isin');
+        if (r.error) throw r.error;
+        created = r.data;
+      }
+      for (const p of plan.filter((x) => x.existing)) {
+        const r = await sb.from('assets').update({ quantity: p.quantity, invested: p.invested }).eq('id', p.existing.id);
+        if (r.error) throw r.error;
+      }
+      const values = plan.map((p) => ({
+        asset_id: p.existing ? p.existing.id : created.find((c) => c.isin === p.isin).id,
+        date, value: p.value, price: p.price, source: 'manual',
+      }));
+      if (closeMissing) for (const a of absent) values.push({ asset_id: a.id, date, value: 0, source: 'manual' });
+      const r = await sb.from('asset_values').upsert(values, { onConflict: 'asset_id,date' });
+      if (r.error) throw r.error;
+      onDone(`${plan.length} position(s) importée(s) dans « ${holderName || 'sans enveloppe'} » (${toCreate.length} nouvelle(s))${closeMissing && absent.length ? `, ${absent.length} soldée(s)` : ''}.`);
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <div className="panel formgrid">
+      <b>Importer un portefeuille (Bourse Direct)</b>
+      <div className="form">
+        <input type="text" list="holders2" placeholder="Enveloppe" value={holder} onChange={(e) => setHolder(e.target.value)} aria-label="Enveloppe" />
+        <datalist id="holders2">{holders.map((h) => <option key={h} value={h} />)}</datalist>
+        <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Type de compte">
+          {KINDS.map((k) => <option key={k}>{k}</option>)}
+        </select>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} aria-label="Date de valorisation" />
+      </div>
+      <input type="file" accept=".xlsx,.csv" onChange={onFile} />
+      <p className="hint">Fichier .xlsx ou .csv exporté depuis Bourse Direct (colonnes Nom, ISIN, Quantité, PRU, Valorisation). Les lignes déjà présentes (même ISIN, même enveloppe) sont mises à jour.</p>
+      {err && <p className="err">{err}</p>}
+      {pos && (
+        <>
+          <p className="muted">{fileName} : {plan.length} position(s), valorisation {eur(total, 2)}.</p>
+          <div className="scroll-x">
+            <table className="prev"><tbody>
+              {plan.slice(0, 40).map((p) => (
+                <tr key={p.isin}>
+                  <td>{p.name}<br /><span className="muted">{p.isin} · {p.existing ? 'mise à jour' : 'nouveau'}</span></td>
+                  <td>{p.quantity} × {p.price != null ? eur(p.price, 2) : '–'}</td>
+                  <td>{eur(p.value, 2)}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          </div>
+          {absent.length > 0 && (
+            <label className="check">
+              <input type="checkbox" checked={closeMissing} onChange={(e) => setCloseMissing(e.target.checked)} />
+              Solder les {absent.length} ligne(s) absente(s) du fichier : {absent.map((a) => a.name).join(', ')}
+            </label>
+          )}
+        </>
+      )}
+      <div className="form">
+        <button className="btn" disabled={busy || !pos || !holder.trim()} onClick={run}>{busy ? 'Import…' : 'Importer'}</button>
+        <button className="btn ghost" onClick={onCancel}>Annuler</button>
+      </div>
+    </div>
+  );
+}
+
 function ActifsTab({ d, g, lat, reload }) {
-  const [editing, setEditing] = useState(null); // 'new' | asset id | null
+  const [editing, setEditing] = useState(null); // 'new' | 'import' | id | null
   const [open, setOpen] = useState(null);
   const [msg, setMsg] = useState('');
   const sb = getSupabase();
-  const sorted = useMemo(
-    () => [...d.assets].sort((a, b) => (lat[b.id] ? lat[b.id].value : 0) - (lat[a.id] ? lat[a.id].value : 0)),
-    [d.assets, lat]
+  const tree = useMemo(() => buildAssetTree(d.assets, lat), [d.assets, lat]);
+  const holders = useMemo(
+    () => [...new Set([...d.assets.map((a) => a.holder).filter(Boolean), 'PEA', 'Assurance vie', 'CTO', 'PER', 'Livret A', 'LDDS', 'LEP'])],
+    [d.assets]
   );
 
   async function del(a) {
@@ -192,62 +314,89 @@ function ActifsTab({ d, g, lat, reload }) {
     if (error) return setMsg(error.message);
     reload();
   }
+  const saved = () => { setEditing(null); reload(); };
+
+  const row = (a) => {
+    const v = lat[a.id] ? lat[a.id].value : null;
+    const gain = gainOf(a, v);
+    const hist = [...(g[a.id] || [])].reverse();
+    return (
+      <div className="lv3" key={a.id}>
+        {editing === a.id
+          ? <AssetForm asset={a} accounts={d.accounts} holders={holders} onSaved={saved} onCancel={() => setEditing(null)} />
+          : (
+            <>
+              <div className="top">
+                <span>{a.name}</span>
+                <span className="amt">{v === null ? '–' : eur(v, 2)}</span>
+              </div>
+              <div className="meta">
+                <span><i className="dot" style={{ background: colorOf(a.asset_class) }} /> {a.asset_class}</span>
+                <span>{a.asset_type}</span>
+                {a.quantity != null && <span>{Number(a.quantity)} titres</span>}
+                {gain && <span className={gain.abs < 0 ? 'neg' : 'pos'}>{eur(gain.abs, 2)} ({fmtPct(gain.pct)})</span>}
+              </div>
+              <div className="form" style={{ marginTop: 6 }}>
+                <button className="btn ghost sm" onClick={() => setOpen(open === a.id ? null : a.id)}>Historique</button>
+                <button className="btn ghost sm" onClick={() => setEditing(a.id)}>Modifier</button>
+                <button className="btn danger sm" onClick={() => del(a)}>Supprimer</button>
+              </div>
+              {open === a.id && (
+                <div style={{ paddingTop: 6 }}>
+                  {hist.length === 0 && <p className="muted">Aucune valeur saisie.</p>}
+                  {hist.map((h, i) => {
+                    const prev = hist[i + 1];
+                    return (
+                      <div className="item" key={h.id}>
+                        <span>{dateFr(h.date)} <span className="muted">{prev && prev.value ? fmtPct(((h.value - prev.value) / prev.value) * 100) : ''}</span></span>
+                        <span className="form"><span className="amt">{eur(h.value, 2)}</span><button className="btn danger sm" onClick={() => delValue(h)}>×</button></span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+      </div>
+    );
+  };
 
   return (
     <>
       {msg && <div className="warn">{msg}</div>}
-      {editing === 'new'
-        ? <AssetForm accounts={d.accounts} onSaved={() => { setEditing(null); reload(); }} onCancel={() => setEditing(null)} />
-        : <button className="btn" onClick={() => setEditing('new')}>Ajouter un actif</button>}
+      {editing === 'new' && <AssetForm accounts={d.accounts} holders={holders} onSaved={saved} onCancel={() => setEditing(null)} />}
+      {editing === 'import' && (
+        <ImportPositions assets={d.assets} lat={lat} holders={holders}
+          onDone={(m) => { setMsg(m); setEditing(null); reload(); }} onCancel={() => setEditing(null)} />
+      )}
+      {editing !== 'new' && editing !== 'import' && (
+        <div className="form">
+          <button className="btn" onClick={() => setEditing('new')}>Ajouter un actif</button>
+          <button className="btn ghost" onClick={() => setEditing('import')}>Importer un portefeuille</button>
+        </div>
+      )}
 
-      <ul className="list" style={{ marginTop: 14 }}>
-        {sorted.map((a) => {
-          const v = lat[a.id] ? lat[a.id].value : null;
-          const gain = gainOf(a, v);
-          const hist = [...(g[a.id] || [])].reverse();
-          return (
-            <li key={a.id} className="tx">
-              {editing === a.id
-                ? <AssetForm asset={a} accounts={d.accounts} onSaved={() => { setEditing(null); reload(); }} onCancel={() => setEditing(null)} />
-                : (
-                  <>
-                    <div className="tx-main">
-                      <span className="tx-label">{a.name}</span>
-                      <span className="amt">{v === null ? '–' : eur(v, 2)}</span>
-                    </div>
-                    <div className="tx-sub">
-                      <span className="tx-meta">
-                        <span><i className="dot" style={{ background: colorOf(a.asset_class) }} /> {a.asset_class}</span>
-                        <span>{a.asset_type}</span>
-                        {a.holder && <span>{a.holder}</span>}
-                      </span>
-                      {gain && <span className={gain.abs < 0 ? 'neg' : 'pos'}>{eur(gain.abs, 2)} ({fmtPct(gain.pct)})</span>}
-                    </div>
-                    <div className="form" style={{ marginTop: 8 }}>
-                      <button className="btn ghost" onClick={() => setOpen(open === a.id ? null : a.id)}>Historique</button>
-                      <button className="btn ghost" onClick={() => setEditing(a.id)}>Modifier</button>
-                      <button className="btn danger" onClick={() => del(a)}>Supprimer</button>
-                    </div>
-                    {open === a.id && (
-                      <div className="detail" style={{ padding: '8px 0 0' }}>
-                        {hist.length === 0 && <p className="muted">Aucune valeur saisie.</p>}
-                        {hist.map((h, i) => {
-                          const prev = hist[i + 1];
-                          return (
-                            <div className="item" key={h.id}>
-                              <span>{dateFr(h.date)} <span className="muted">{prev ? fmtPct(prev.value ? ((h.value - prev.value) / prev.value) * 100 : null) : ''}</span></span>
-                              <span className="form"><b className="amt">{eur(h.value, 2)}</b><button className="btn danger" onClick={() => delValue(h)}>×</button></span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </>
-                )}
-            </li>
-          );
-        })}
-      </ul>
+      <div className="tree" style={{ marginTop: 16 }}>
+        {tree.map((k) => (
+          <details key={k.kind} className="lv1" open>
+            <summary>
+              <span>{k.kind}</span>
+              {k.gain && <span className={'amt ' + (k.gain.abs < 0 ? 'neg' : 'pos')}>{fmtPct(k.gain.pct)}</span>}
+              <span className="amt">{eur(k.total)}</span>
+            </summary>
+            {k.envelopes.map((e) => (
+              <details key={e.name} className="lv2" open>
+                <summary>
+                  <span>{e.name}</span>
+                  {e.gain && <span className={'amt ' + (e.gain.abs < 0 ? 'neg' : 'pos')}>{fmtPct(e.gain.pct)}</span>}
+                  <span className="amt">{eur(e.total)}</span>
+                </summary>
+                {e.items.map(row)}
+              </details>
+            ))}
+          </details>
+        ))}
+      </div>
       {d.assets.length === 0 && <p className="muted">Aucun actif pour le moment.</p>}
     </>
   );
@@ -294,7 +443,7 @@ function MajTab({ d, lat, reload }) {
         return (
           <div className="item" key={a.id}>
             <div>
-              {a.name}
+              {a.name}{a.holder && <span className="muted"> · {a.holder}</span>}
               <div className="muted">{l ? `Dernière valeur ${eur(l.value, 2)} au ${dateFr(l.date)}` : 'Aucune valeur'}</div>
               {bal && <button className="btn ghost" style={{ minHeight: 30, padding: '2px 8px', marginTop: 4 }} onClick={() => setVals({ ...vals, [a.id]: String(bal.balance) })}>Solde importé {eur(bal.balance, 2)} au {dateFr(bal.date)}</button>}
             </div>
