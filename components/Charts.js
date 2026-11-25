@@ -4,7 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Legend,
 } from 'recharts';
 import { colorOf } from '../lib/categories.js';
-import { eur, monthLabel } from '../lib/format.js';
+import { eur, monthLabel, dateFr } from '../lib/format.js';
 
 const TIP = { background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 8, color: 'var(--ink)' };
 const TICK = { fontSize: 12, fill: 'var(--muted)' };
@@ -19,7 +19,7 @@ export function CategoryPie({ data }) {
       <ResponsiveContainer width="100%" height={260}>
         <PieChart>
           <Pie data={data} dataKey="value" nameKey="name" innerRadius="45%" outerRadius="92%" paddingAngle={1} stroke="none" isAnimationActive={false}>
-            {data.map((d) => <Cell key={d.name} fill={colorOf(d.name)} />)}
+            {data.map((d) => <Cell key={d.name} fill={d.color || colorOf(d.name)} />)}
           </Pie>
           <Tooltip formatter={(v) => eur(v)} contentStyle={TIP} />
         </PieChart>
@@ -27,7 +27,7 @@ export function CategoryPie({ data }) {
       <ul className="legend">
         {data.map((d) => (
           <li key={d.name}>
-            <i style={{ background: colorOf(d.name) }} />
+            <i style={{ background: d.color || colorOf(d.name) }} />
             <span>{d.name}</span>
             <b>{eur(d.value)}</b>
             <em>{Math.round((d.value / total) * 100)} %</em>
@@ -74,15 +74,15 @@ export function FlowSankey({ data }) {
   );
 }
 
-export function TrendLines({ data, series }) {
+export function TrendLines({ data, series, xKey = 'month', xFormat = monthLabel }) {
   if (!data.length) return <Empty />;
   return (
     <ResponsiveContainer width="100%" height={300}>
       <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
         <CartesianGrid stroke="var(--line)" vertical={false} />
-        <XAxis dataKey="month" tickFormatter={monthLabel} tick={TICK} />
+        <XAxis dataKey={xKey} tickFormatter={xFormat} tick={TICK} />
         <YAxis width={48} tickFormatter={short} tick={TICK} />
-        <Tooltip labelFormatter={monthLabel} formatter={(v) => eur(v)} contentStyle={TIP} />
+        <Tooltip labelFormatter={xFormat} formatter={(v) => eur(v)} contentStyle={TIP} />
         <Legend />
         {series.map((s) => (
           <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color}
@@ -127,5 +127,21 @@ export function PivotTable({ data }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+export function WealthChart({ data, long }) {
+  if (!data.length) return <Empty />;
+  const fmt = (d) => (long ? monthLabel(d.slice(0, 7)) : `${d.slice(8)}/${d.slice(5, 7)}`);
+  return (
+    <ResponsiveContainer width="100%" height={280}>
+      <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+        <CartesianGrid stroke="var(--line)" vertical={false} />
+        <XAxis dataKey="date" tickFormatter={fmt} tick={TICK} minTickGap={28} />
+        <YAxis width={52} tickFormatter={short} tick={TICK} domain={['auto', 'auto']} />
+        <Tooltip labelFormatter={dateFr} formatter={(v) => eur(v)} contentStyle={TIP} />
+        <Line type="linear" dataKey="total" name="Patrimoine" stroke="#2E7D5B" strokeWidth={2} dot={data.length <= 24} isAnimationActive={false} />
+      </LineChart>
+    </ResponsiveContainer>
   );
 }

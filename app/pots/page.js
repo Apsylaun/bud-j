@@ -11,6 +11,7 @@ import { eur, dateFr, monthLabel } from '../../lib/format.js';
 import { colorOf } from '../../lib/categories.js';
 import { Seg } from '../../components/Filters.js';
 import { TrendLines } from '../../components/Charts.js';
+import { loadAssets, loadValues, groupValues, latest } from '../../lib/wealth.js';
 
 const TABS = [['vue', 'Vue'], ['mois', 'Mois'], ['mouvements', 'Mouvements'], ['gerer', 'Gérer']];
 const num = (s) => Number(String(s).replace(',', '.')) || 0;
@@ -22,8 +23,16 @@ export default function Pots() {
 
   const reload = useCallback(async () => {
     try {
-      const [pots, entries, months, accounts] = await Promise.all([loadPots(), loadEntries(), loadPotMonths(), loadAccounts()]);
-      setD({ pots, entries, months, accounts }); setErr('');
+      const [pots, entries, months, accounts, w] = await Promise.all([
+        loadPots(), loadEntries(), loadPotMonths(), loadAccounts(),
+        Promise.all([loadAssets(), loadValues()]).catch(() => null),
+      ]);
+      let liquid = null;
+      if (w && w[0].length) {
+        const lat = latest(groupValues(w[1]));
+        liquid = r2(w[0].filter((a) => a.asset_class === 'Liquidité').reduce((s, a) => s + (lat[a.id] ? lat[a.id].value : 0), 0));
+      }
+      setD({ pots, entries, months, accounts, liquid }); setErr('');
     } catch (e) {
       setErr(/schema cache|does not exist/i.test(e.message || '') ? 'Tables absentes : exécute supabase/002_pots.sql dans Supabase.' : e.message);
     }
@@ -116,6 +125,12 @@ function ViewTab({ d, tree }) {
         <div><span>{last ? `Clôturé ${monthLabel(last.month)}` : 'Dernier mois clôturé'}</span><b>{last ? eur(last.surplus) : '–'}</b></div>
         <div><span>Pots en négatif</span><b className={negatives ? 'neg' : ''}>{negatives}</b></div>
       </div>
+      {d.liquid !== null && (
+        <p className={'hint' + (d.liquid - total < 0 ? ' neg' : '')}>
+          Liquidités du patrimoine : {eur(d.liquid)} · Liquidités − pots : {eur(d.liquid - total)}.
+          {d.liquid - total < 0 ? ' Les pots dépassent tes liquidités : vérifie les soldes saisis.' : ' Les pots sont virtuels : cet écart est l’argent non affecté.'}
+        </p>
+      )}
       <h2>Évolution</h2>
       <div className="panel"><TrendLines data={series} series={lines} /></div>
       <h2>Pots</h2>

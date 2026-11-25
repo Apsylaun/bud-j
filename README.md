@@ -63,3 +63,24 @@ Fichiers modifiés : `components/Shell.js`, `app/page.js`, `app/transactions/pag
 - **Sous-pots / projets** : Gérer → Ajouter → « Sous-pot de… », puis Mouvements → Déplacer (pot → sous-pot). Le total du pot ne change pas.
 - **Soldes initiaux** : Mouvements → date d’ouverture + montants.
 - **Sankey** (Accueil, vue Perso, case cochée, mois clôturés) : l’excédent est réparti par pots.
+
+---
+
+# Zip 3 — patrimoine
+
+**Mise à jour** : extraire par-dessus le dépôt, puis Supabase → SQL Editor → `supabase/003_placements.sql` → Run, `git push`.
+
+Nouveaux : `app/patrimoine/page.js`, `lib/wealth.js`, `supabase/003_placements.sql`. Modifiés : `components/Charts.js`, `components/Shell.js`, `app/pots/page.js`, `app/globals.css`, `lib/categories.js`.
+
+## Fonctionnement
+
+- **Actifs** : nom, type, classe (liquidité, actions, obligations, immobilier, alternatif), enveloppe, montant investi (ou quantité × PRU), compte bancaire lié (optionnel). Valeur initiale saisie à la création.
+- **Mise à jour** : une date, une valeur par ligne. Un compte lié propose le dernier solde importé.
+- **Vue** : patrimoine, +/- value latente (actifs avec montant investi), évolution 1S / 1M / 3M / 6M / YTD / 1A / Tout, anneau par classe, type ou actif.
+  Entre deux relevés la dernière valeur est reportée : les courtes périodes restent plates tant que les relevés sont mensuels.
+- **Simulateur** : global ou par classe (capital, rendement, versement mensuel), durée, inflation. Intérêts composés mensuels, versements en fin de mois.
+- **Pots** : la vue affiche l’écart entre les liquidités du patrimoine et le total des pots.
+
+## Cours automatiques (PEA) — à venir
+
+Les colonnes `isin`, `ticker`, `quantity` et `asset_values.price/source` sont déjà prêtes. L’étape suivante sera une tâche planifiée Vercel qui lit les cours via une API et enregistre un relevé quotidien (`source = 'api'`), sans toucher à la saisie manuelle.
