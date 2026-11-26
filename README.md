@@ -117,3 +117,16 @@ Les colonnes `isin`, `ticker`, `quantity` et `asset_values.price/source` sont d�
 - **Pots** : 4 par ligne maximum, couleur modifiable (Gérer › Couleur), clic sur un pot pour son contenu, ses sous-objectifs, son évolution et ses mouvements.
 - **Versements** : la part d’un pot va au sous-objectif non atteint dont l’échéance est la plus proche ; sinon elle reste dans le pot (« Non affecté »).
 - **Tableau de bord** : raccourcis vers Opérations, Pots, Patrimoine, et Réglages en bas de page.
+
+---
+
+# Bud-J v5
+
+**Mise à jour** : extraire le zip complet à la racine du dépôt, exécuter **`supabase/007_update.sql`** dans Supabase (une fois ; il contient 005 et 006 et peut être relancé sans danger), puis `git push`.
+Il corrige l’erreur « Could not find the 'account_kind' column… » et recharge le cache du schéma.
+
+- **Annuler** : bouton « Annuler » (menu latéral, en haut à droite sur mobile) et Ctrl/Cmd+Z hors saisie de texte. Pile de 30 actions, vidée au rechargement. Non annulables : suppression d’un compte, d’une catégorie, d’un pot ou d’un actif, import de portefeuille, soldes initiaux.
+- **Opérations** : « + Ajouter une opération » et « Importer » (CSV bancaire ou modèle GSheet : Motif = catégorie, créée si elle n’existe pas ; Note = commentaire). La page Import n’existe plus. « Modifier » ouvre une fenêtre (commentaire, règle de catégorisation). Une bulle signale un commentaire.
+- **Réglages** : catégories repliables, bouton « Modifier » (nom, couleur, nature), « Suppr. ».
+- **Pots** : répartition par curseurs, remplissage conservé sur la page d’un pot, sous-objectifs modifiables avec emoji.
+- **Patrimoine** : libellés explicites dans le simulateur.

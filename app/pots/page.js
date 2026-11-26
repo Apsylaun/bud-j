@@ -10,6 +10,9 @@ import {
 import { eur, dateFr, monthLabel } from '../../lib/format.js';
 import { registerExtraColors } from '../../lib/categories.js';
 import Colors from '../../components/Colors.js';
+import Modal from '../../components/Modal.js';
+import { pushUndo, snapshotOf, onDataChange } from '../../lib/undo.js';
+import { updateRow } from '../../lib/data.js';
 import { Seg } from '../../components/Filters.js';
 import PigBank from '../../components/PigBank.js';
 import { TrendLines } from '../../components/Charts.js';
@@ -41,6 +44,7 @@ export default function Pots() {
     }
   }, []);
   useEffect(() => { reload(); }, [reload]);
+  useEffect(() => onDataChange(reload), [reload]);
 
   const own = useMemo(() => (d ? ownBalances(d.entries) : {}), [d]);
   const tree = useMemo(() => (d ? buildTree(d.pots, own) : []), [d, own]);
@@ -84,12 +88,60 @@ function goalInfo(pot, bal) {
   return parts.join(' · ');
 }
 
+// Niveau de remplissage : part de l'objectif, ou taille relative au plus gros pot sans objectif.
+const fillOf = (pot, maxBal) => (pot.total > 0 ? (pot.target ? pot.total / pot.target : maxBal > 0 ? pot.total / maxBal : 0) : 0);
+
+const EMOJIS = ['✈️', '🏝️', '🏠', '🚗', '💍', '🎁', '🎓', '💻', '📱', '🎸', '⛷️', '👶', '🐶', '🛠️', '🪴', '🎮', '📚', '🍽️', '🎟️', '💰', '🛡️', '🏥', '🎄', '🚲'];
+
+function KidModal({ kid, orig, onClose, onSaved }) {
+  const [f, setF] = useState({ name: kid.name, emoji: kid.emoji || '', target: kid.target != null ? String(kid.target) : '', date: kid.target_date || '' });
+  const [err, setErr] = useState('');
+  async function save(e) {
+    e.preventDefault();
+    const patch = { name: f.name.trim(), emoji: f.emoji.trim() || null, target: f.target ? num(f.target) : null, target_date: f.date || null };
+    const before = snapshotOf(orig, patch);
+    const { error } = await getSupabase().from('pots').update(patch).eq('id', kid.id);
+    if (error) return setErr(error.message);
+    pushUndo(`Modification de « ${kid.name} »`, () => updateRow('pots', kid.id, before));
+    onSaved();
+  }
+  async function remove() {
+    if (!window.confirm(`Supprimer « ${kid.name} » ? Son historique sera perdu.`)) return;
+    const { error } = await getSupabase().from('pots').delete().eq('id', kid.id);
+    if (error) return setErr(error.message);
+    onSaved();
+  }
+  return (
+    <Modal title="Modifier le sous-objectif" onClose={onClose}>
+      <form className="formgrid flat" onSubmit={save}>
+        <div className="form">
+          <input type="text" className="num" style={{ width: 64, textAlign: 'center', fontSize: 20 }} maxLength={8} placeholder="🙂" value={f.emoji} onChange={(e) => setF({ ...f, emoji: e.target.value })} aria-label="Emoji" />
+          <input type="text" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required aria-label="Nom" style={{ flex: 1 }} />
+        </div>
+        <div className="emojis">
+          {EMOJIS.map((em) => <button key={em} type="button" className={f.emoji === em ? 'on' : ''} onClick={() => setF({ ...f, emoji: f.emoji === em ? '' : em })}>{em}</button>)}
+        </div>
+        <div className="form">
+          <label className="fld"><span>Objectif (€)</span><input type="text" inputMode="decimal" className="num" value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} /></label>
+          <label className="fld"><span>Échéance</span><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></label>
+        </div>
+        {err && <p className="err">{err}</p>}
+        <div className="form">
+          <button className="btn">Enregistrer</button>
+          <button type="button" className="btn ghost" onClick={onClose}>Annuler</button>
+          <button type="button" className="btn danger" onClick={remove}>Suppr.</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function PigCard({ pot, maxBal, onOpen }) {
   const bal = pot.total;
-  const pct = pot.target ? bal / pot.target : maxBal > 0 ? bal / maxBal : 0;
+  const pct = fillOf(pot, maxBal);
   return (
     <button className="pig" onClick={onOpen} aria-label={`Ouvrir le pot ${pot.name}`}>
-      <PigBank fill={bal > 0 ? pct : 0} color={pot.color} negative={bal < 0} label={`Pot ${pot.name}`} />
+      <PigBank fill={pct} color={pot.color} negative={bal < 0} label={`Pot ${pot.name}`} />
       <span className="pname">{pot.name}</span>
       <b className={bal < 0 ? 'neg' : ''}>{eur(bal)}</b>
       <small>{goalInfo(pot, bal)}</small>
@@ -98,7 +150,8 @@ function PigCard({ pot, maxBal, onOpen }) {
   );
 }
 
-function PotDetail({ pot, d, reload, onBack }) {
+function PotDetail({ pot, d, reload, onBack, maxBal }) {
+  const [editKid, setEditKid] = useState(null);
   const [limit, setLimit] = useState(30);
   const [f, setF] = useState({ name: '', target: '', date: '' });
   const [msg, setMsg] = useState('');
@@ -119,11 +172,12 @@ function PotDetail({ pot, d, reload, onBack }) {
 
   async function addKid(e) {
     e.preventDefault(); setMsg('');
-    const { error } = await getSupabase().from('pots').insert({
+    const { data, error } = await getSupabase().from('pots').insert({
       name: f.name.trim(), parent_id: pot.id, target: f.target ? num(f.target) : null,
       target_date: f.date || null, sort: d.pots.length,
-    });
+    }).select('id').single();
     if (error) return setMsg(error.message);
+    pushUndo('Ajout de sous-objectif', async () => { const r = await getSupabase().from('pots').delete().eq('id', data.id); if (r.error) throw r.error; });
     setF({ name: '', target: '', date: '' }); reload();
   }
 
@@ -131,7 +185,7 @@ function PotDetail({ pot, d, reload, onBack }) {
     <>
       <button className="btn ghost sm" onClick={onBack}>← Tous les pots</button>
       <div className="potdetail-head">
-        <PigBank fill={pot.target ? Math.max(0, pot.total) / pot.target : 0} color={pot.color} negative={pot.total < 0} label={`Pot ${pot.name}`} />
+        <PigBank fill={fillOf(pot, maxBal)} color={pot.color} negative={pot.total < 0} label={`Pot ${pot.name}`} />
         <div>
           <h2><i className="dot" style={{ background: pot.color }} /> {pot.name}</h2>
           <b className={'big' + (pot.total < 0 ? ' neg' : '')}>{eur(pot.total, 2)}</b>
@@ -152,10 +206,13 @@ function PotDetail({ pot, d, reload, onBack }) {
         <div className="goalrow" key={k.id}>
           <div className="item" style={{ borderBottom: 0, paddingBottom: 2 }}>
             <span>
-              <i className="dot" style={{ background: k.color }} /> {k.name}
+              {k.emoji ? <span style={{ fontSize: 16 }}>{k.emoji}</span> : <i className="dot" style={{ background: k.color }} />} {k.name}
               {next && next.id === k.id && <span className="badge">reçoit les prochains versements</span>}
             </span>
-            <b className={k.balance < 0 ? 'neg' : ''}>{eur(k.balance, 2)}</b>
+            <span className="form">
+              <b className={k.balance < 0 ? 'neg' : ''}>{eur(k.balance, 2)}</b>
+              <button className="btn ghost sm" onClick={() => setEditKid(k)}>Modifier</button>
+            </span>
           </div>
           {k.target ? <div className="track2"><span style={{ width: `${Math.max(0, Math.min(100, (k.balance / k.target) * 100))}%`, background: k.color }} /></div> : null}
           <p className="hint" style={{ margin: '2px 0 4px' }}>{goalInfo(k, k.balance)}</p>
@@ -169,6 +226,8 @@ function PotDetail({ pot, d, reload, onBack }) {
       </form>
       {msg && <p className="err">{msg}</p>}
       <p className="hint">Chaque versement mensuel va au sous-objectif non atteint dont l’échéance est la plus proche ; sans sous-objectif éligible, il reste dans « Non affecté ».</p>
+
+      {editKid && <KidModal kid={editKid} orig={d.pots.find((x) => x.id === editKid.id) || editKid} onClose={() => setEditKid(null)} onSaved={() => { setEditKid(null); reload(); }} />}
 
       <h2>Évolution</h2>
       <div className="panel"><TrendLines data={series} series={lines} /></div>
@@ -200,7 +259,7 @@ function ViewTab({ d, tree, reload }) {
   const series = useMemo(() => balanceSeries(tree, d.entries), [tree, d.entries]);
   const lines = [...tree.map((m) => ({ key: m.name, label: m.name, color: m.color })), { key: 'Total', label: 'Total', color: '#7A8FA6', dash: '5 4' }];
   const maxBal = Math.max(0, ...tree.map((m) => m.total));
-  if (sel) return <PotDetail pot={sel} d={d} reload={reload} onBack={() => setSelId(null)} />;
+  if (sel) return <PotDetail pot={sel} d={d} reload={reload} maxBal={maxBal} onBack={() => setSelId(null)} />;
   return (
     <>
       <div className="strip">
@@ -264,7 +323,15 @@ function MonthTab({ d, tree, reload }) {
 
   async function run(fn, args, ok) {
     setBusy(true); setMsg('');
-    try { await rpc(fn, args); setMsg(ok); await reload(); } catch (e) { setMsg(e.message); }
+    try {
+      const prev = row ? { closed: row.closed, surplus: row.surplus, pcts: row.pcts } : null;
+      await rpc(fn, args);
+      pushUndo(fn === 'close_pot_month' ? `Clôture de ${monthLabel(month)}` : `Réouverture de ${monthLabel(month)}`, async () => {
+        if (prev && prev.closed) await rpc('close_pot_month', { p_month: month, p_surplus: Number(prev.surplus), p_pcts: prev.pcts });
+        else await rpc('reopen_pot_month', { p_month: month });
+      });
+      setMsg(ok); await reload();
+    } catch (e) { setMsg(e.message); }
     setBusy(false);
   }
 
@@ -295,23 +362,26 @@ function MonthTab({ d, tree, reload }) {
       )}
 
       <h2>Répartition</h2>
-      <p className="hint">Chaque part alimente d’abord le sous-objectif non atteint dont l’échéance est la plus proche (→).</p>
+      <p className="hint">Déplace les curseurs : « Reste » prend le solde. Chaque part alimente d’abord le sous-objectif non atteint dont l’échéance est la plus proche (→).</p>
       {surplus < 0 ? (
         <p className="warn">Déficit de {eur(-surplus, 2)} : il sera débité du pot Imprévu. Les pourcentages ne s’appliquent pas.</p>
       ) : null}
-      {mains.map((m) => (
-        <div className="item" key={m.id}>
-          <span><i className="dot" style={{ background: m.color }} /> {m.name}{subDest(m) && <span className="muted"> → {subDest(m).name}</span>}</span>
-          <span className="form">
-            <span className="muted">{surplus > 0 ? eur((surplus * num(pcts[m.id] ?? 0)) / 100, 2) : ''}</span>
-            <input type="text" inputMode="decimal" className="num" value={pcts[m.id] ?? ''} placeholder="0"
-              onChange={(e) => setPcts({ ...pcts, [m.id]: e.target.value })} aria-label={`Pourcentage ${m.name}`} /> %
-          </span>
-        </div>
-      ))}
+      {mains.map((m) => {
+        const val = num(pcts[m.id] ?? 0);
+        const dest = subDest(m);
+        return (
+          <div className="sliderrow" key={m.id}>
+            <span><i className="dot" style={{ background: m.color }} /> {m.name}{dest && <span className="muted"> → {dest.emoji ? `${dest.emoji} ` : ''}{dest.name}</span>}</span>
+            <span className="muted">{surplus > 0 ? eur((surplus * val) / 100, 2) : ''}</span>
+            <b>{val} %</b>
+            <input type="range" min="0" max="100" step="0.5" value={val} aria-label={`Part ${m.name}`}
+              onChange={(e) => setPcts({ ...pcts, [m.id]: Math.min(Number(e.target.value), val + Math.max(0, restPct)) })} />
+          </div>
+        );
+      })}
       {rest && (
         <div className="item">
-          <span><i className="dot" style={{ background: rest.color }} /> {rest.name} <span className="muted">(le solde)</span>{subDest(rest) && <span className="muted"> → {subDest(rest).name}</span>}</span>
+          <span><i className="dot" style={{ background: rest.color }} /> {rest.name} <span className="muted">(le solde)</span>{subDest(rest) && <span className="muted"> → {subDest(rest).emoji ? `${subDest(rest).emoji} ` : ''}{subDest(rest).name}</span>}</span>
           <span className={restPct < 0 ? 'neg' : ''}>{surplus > 0 ? eur((surplus * Math.max(restPct, 0)) / 100, 2) + ' · ' : ''}{restPct} %</span>
         </div>
       )}
@@ -348,7 +418,9 @@ function MovesTab({ d, tree, reload }) {
   async function move(e) {
     e.preventDefault(); setBusy(true); setMsg('');
     try {
+      const mvd = { from: mv.from, to: mv.to, amount: num(mv.amount) };
       await rpc('move_between_pots', { p_from: mv.from, p_to: mv.to, p_amount: num(mv.amount), p_note: mv.note || null });
+      pushUndo('Déplacement entre pots', () => rpc('move_between_pots', { p_from: mvd.to, p_to: mvd.from, p_amount: mvd.amount, p_note: 'Annulation' }));
       setMv({ from: '', to: '', amount: '', note: '' }); setMsg('Mouvement enregistré.'); await reload();
     } catch (err) { setMsg(err.message); }
     setBusy(false);
@@ -417,22 +489,29 @@ function ManageTab({ d, tree, reload }) {
       const r = await sb.from('pots').insert({
         name: f.name.trim(), parent_id: f.parent || null, target: f.target ? num(f.target) : null,
         target_date: f.date || null, sort: d.pots.length,
-      });
-      if (!r.error) setF({ name: '', parent: '', target: '', date: '' });
+      }).select('id').single();
+      if (!r.error) {
+        pushUndo('Ajout de pot', async () => { const x = await getSupabase().from('pots').delete().eq('id', r.data.id); if (x.error) throw x.error; });
+        setF({ name: '', parent: '', target: '', date: '' });
+      }
       return r;
     });
   };
-  const rename = (p) => { const n = window.prompt('Nouveau nom :', p.name); if (n && n.trim()) attempt(() => sb.from('pots').update({ name: n.trim() }).eq('id', p.id)); };
+  const patchPot = (p, patch, label) => attempt(async () => {
+    const orig = d.pots.find((x) => x.id === p.id) || p;
+    const before = snapshotOf(orig, patch);
+    const r = await sb.from('pots').update(patch).eq('id', p.id);
+    if (!r.error) pushUndo(label, () => updateRow('pots', p.id, before));
+    return r;
+  });
+  const rename = (p) => { const n = window.prompt('Nouveau nom :', p.name); if (n && n.trim()) patchPot(p, { name: n.trim() }, `Renommage de « ${p.name} »`); };
   const openGoal = (p) => {
     if (goalFor === p.id) return setGoalFor(null);
     setGoalFor(p.id); setG({ target: p.target != null ? String(p.target) : '', date: p.target_date || '' });
   };
   const saveGoal = (p, clear) => {
-    attempt(async () => {
-      const r = await sb.from('pots').update(clear ? { target: null, target_date: null } : { target: g.target ? num(g.target) : null, target_date: g.date || null }).eq('id', p.id);
-      if (!r.error) setGoalFor(null);
-      return r;
-    });
+    patchPot(p, clear ? { target: null, target_date: null } : { target: g.target ? num(g.target) : null, target_date: g.date || null }, `Objectif de « ${p.name} »`);
+    setGoalFor(null);
   };
   const del = (p, kids) => {
     const warn = hasEntries(p.id) || kids ? ' Son historique (et celui de ses sous-objectifs) sera perdu.' : '';
@@ -451,10 +530,10 @@ function ManageTab({ d, tree, reload }) {
           <button className="btn ghost sm" onClick={() => rename(p)}>Renommer</button>
           <button className="btn ghost sm" onClick={() => openGoal(p)}>Objectif</button>
           <button className="btn ghost sm" onClick={() => setPaint(paint === p.id ? null : p.id)}>Couleur</button>
-          {!p.role && <button className="btn danger sm" onClick={() => del(p, kids)}>Supprimer</button>}
+          {!p.role && <button className="btn danger sm" onClick={() => del(p, kids)}>Suppr.</button>}
         </span>
       </div>
-      {paint === p.id && <Colors value={p.color} onPick={(c) => attempt(() => sb.from('pots').update({ color: c }).eq('id', p.id))} />}
+      {paint === p.id && <Colors value={p.color} onPick={(c) => patchPot(p, { color: c }, `Couleur de « ${p.name} »`)} />}
       {goalFor === p.id && (
         <div className="form" style={{ padding: '6px 0 10px' }}>
           <input type="text" inputMode="decimal" className="num" placeholder="Montant €" value={g.target} onChange={(e) => setG({ ...g, target: e.target.value })} aria-label="Objectif" />

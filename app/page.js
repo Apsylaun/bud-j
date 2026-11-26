@@ -85,7 +85,7 @@ export default function Dashboard() {
 
       {state.error && <p className="err">{state.error}</p>}
       {!state.loading && !state.error && accounts.length === 0 && (
-        <div className="warn">Aucun compte. <Link href="/reglages">Crée un compte</Link>, puis <Link href="/import">importe un CSV</Link>.</div>
+        <div className="warn">Aucun compte. <Link href="/reglages">Crée un compte</Link>, puis <Link href="/transactions">importe un CSV</Link>.</div>
       )}
 
       <div className="strip">

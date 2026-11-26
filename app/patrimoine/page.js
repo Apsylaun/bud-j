@@ -7,6 +7,9 @@ import {
   breakdown, gainOf, portfolioGain, project, r2, fmtPct, KINDS, kindForType, guessType, buildAssetTree,
 } from '../../lib/wealth.js';
 import { readPositionsFile } from '../../lib/positions.js';
+import { pushUndo, snapshotOf, onDataChange } from '../../lib/undo.js';
+import { friendly } from '../../lib/errors.js';
+import { updateRow } from '../../lib/data.js';
 import { eur, dateFr } from '../../lib/format.js';
 import { colorOf, paletteColor } from '../../lib/categories.js';
 import { Seg } from '../../components/Filters.js';
@@ -30,6 +33,7 @@ export default function Patrimoine() {
     }
   }, []);
   useEffect(() => { reload(); }, [reload]);
+  useEffect(() => onDataChange(reload), [reload]);
 
   const g = useMemo(() => (d ? groupValues(d.values) : {}), [d]);
   const lat = useMemo(() => latest(g), [g]);
@@ -114,8 +118,10 @@ function AssetForm({ asset, accounts, holders, onSaved, onCancel }) {
         quantity: f.qty !== '' ? num(f.qty) : null, invested, account_id: f.account || null,
       };
       if (asset) {
+        const before = snapshotOf(asset, row);
         const { error } = await sb.from('assets').update(row).eq('id', asset.id);
         if (error) throw error;
+        pushUndo(`Modification de « ${asset.name} »`, () => updateRow('assets', asset.id, before));
       } else {
         const { data, error } = await sb.from('assets').insert(row).select('id').single();
         if (error) throw error;
@@ -123,9 +129,10 @@ function AssetForm({ asset, accounts, holders, onSaved, onCancel }) {
           const r = await sb.from('asset_values').insert({ asset_id: data.id, date: f.date, value: num(f.value) });
           if (r.error) throw r.error;
         }
+        pushUndo('Ajout d’actif', async () => { const x = await getSupabase().from('assets').delete().eq('id', data.id); if (x.error) throw x.error; });
       }
       onSaved();
-    } catch (e2) { setErr(e2.message); setBusy(false); }
+    } catch (e2) { setErr(friendly(e2)); setBusy(false); }
   }
 
   return (
@@ -245,7 +252,7 @@ function ImportPositions({ assets, lat, holders, onDone, onCancel }) {
       const r = await sb.from('asset_values').upsert(values, { onConflict: 'asset_id,date' });
       if (r.error) throw r.error;
       onDone(`${plan.length} position(s) importée(s) dans « ${holderName || 'sans enveloppe'} » (${toCreate.length} nouvelle(s))${closeMissing && absent.length ? `, ${absent.length} soldée(s)` : ''}.`);
-    } catch (e) { setErr(e.message); setBusy(false); }
+    } catch (e) { setErr(friendly(e)); setBusy(false); }
   }
 
   return (
@@ -306,12 +313,16 @@ function ActifsTab({ d, g, lat, reload }) {
   async function del(a) {
     if (!window.confirm(`Supprimer « ${a.name} » et tout son historique ?`)) return;
     const { error } = await sb.from('assets').delete().eq('id', a.id);
-    if (error) return setMsg(error.message);
+    if (error) return setMsg(friendly(error));
     reload();
   }
   async function delValue(v) {
     const { error } = await sb.from('asset_values').delete().eq('id', v.id);
-    if (error) return setMsg(error.message);
+    if (error) return setMsg(friendly(error));
+    pushUndo('Suppression de relevé', async () => {
+      const r = await getSupabase().from('asset_values').insert({ id: v.id, asset_id: v.asset_id, date: v.date, value: v.value });
+      if (r.error) throw r.error;
+    });
     reload();
   }
   const saved = () => { setEditing(null); reload(); };
@@ -339,12 +350,13 @@ function ActifsTab({ d, g, lat, reload }) {
               <div className="form" style={{ marginTop: 6 }}>
                 <button className="btn ghost sm" onClick={() => setOpen(open === a.id ? null : a.id)}>Historique</button>
                 <button className="btn ghost sm" onClick={() => setEditing(a.id)}>Modifier</button>
-                <button className="btn danger sm" onClick={() => del(a)}>Supprimer</button>
+                <button className="btn danger sm" onClick={() => del(a)}>Suppr.</button>
               </div>
               {open === a.id && (
                 <div style={{ paddingTop: 6 }}>
                   {hist.length === 0 && <p className="muted">Aucune valeur saisie.</p>}
-                  {hist.map((h, i) => {
+                  {hist.map((h0, i) => {
+                    const h = { ...h0, asset_id: a.id };
                     const prev = hist[i + 1];
                     return (
                       <div className="item" key={h.id}>
@@ -423,9 +435,19 @@ function MajTab({ d, lat, reload }) {
         const { error } = await sb.from('assets').update({ invested: num(inv[a.id]) }).eq('id', a.id);
         if (error) throw error;
       }
+      const prevInv = d.assets.filter((a) => (inv[a.id] ?? '') !== '').map((a) => [a.id, a.invested]);
+      const prevVals = rows.map((r) => ({ r, old: d.values.find((v) => v.asset_id === r.asset_id && v.date === date) }));
+      pushUndo(`Relevé du ${dateFr(date)}`, async () => {
+        const c = getSupabase();
+        for (const { r, old } of prevVals) {
+          const x = old ? await c.from('asset_values').upsert({ asset_id: r.asset_id, date, value: Number(old.value) }, { onConflict: 'asset_id,date' }) : await c.from('asset_values').delete().eq('asset_id', r.asset_id).eq('date', date);
+          if (x.error) throw x.error;
+        }
+        for (const [id, invested] of prevInv) await updateRow('assets', id, { invested });
+      });
       setVals({}); setInv({}); setMsg(`${rows.length} valeur(s) enregistrée(s) au ${dateFr(date)}.`);
       await reload();
-    } catch (e) { setMsg(e.message); }
+    } catch (e) { setMsg(friendly(e)); }
     setBusy(false);
   }
 
@@ -494,30 +516,28 @@ function SimuTab({ d, lat }) {
   return (
     <>
       <Seg value={mode} onChange={setMode} options={[['global', 'Global'], ['classe', 'Par classe']]} />
-      <div className="form" style={{ margin: '14px 0' }}>
-        <label className="muted">Durée (ans) {' '}<input type="text" inputMode="numeric" className="num" value={years} onChange={(e) => setYears(e.target.value)} /></label>
-        <label className="muted">Inflation (%) {' '}<input type="text" inputMode="decimal" className="num" value={infl} onChange={(e) => setInfl(e.target.value)} /></label>
+      <div className="simglobal" style={{ margin: '14px 0' }}>
+        <label className="fld"><span>Durée (années)</span><input type="text" inputMode="numeric" className="num" value={years} onChange={(e) => setYears(e.target.value)} /></label>
+        <label className="fld"><span>Inflation (% par an)</span><input type="text" inputMode="decimal" className="num" value={infl} onChange={(e) => setInfl(e.target.value)} /></label>
       </div>
 
       {mode === 'global' ? (
-        <div className="form">
-          <label className="muted">Capital {inp(glob, setGlob, 'start', 'Capital de départ')}</label>
-          <label className="muted">Rendement %/an {inp(glob, setGlob, 'rate', 'Rendement annuel')}</label>
-          <label className="muted">Versement €/mois {inp(glob, setGlob, 'monthly', 'Versement mensuel')}</label>
+        <div className="simglobal">
+          <label className="fld"><span>Capital de départ (€)</span>{inp(glob, setGlob, 'start', 'Capital de départ')}</label>
+          <label className="fld"><span>Rendement (% par an)</span>{inp(glob, setGlob, 'rate', 'Rendement annuel')}</label>
+          <label className="fld"><span>Versement (€ par mois)</span>{inp(glob, setGlob, 'monthly', 'Versement mensuel')}</label>
         </div>
       ) : (
         CLASSES.map((c) => (
-          <div className="item" key={c}>
-            <span><i className="dot" style={{ background: colorOf(c) }} /> {c}</span>
-            <span className="form">
-              {inp(cls[c], (v) => setCls({ ...cls, [c]: v }), 'start', `Capital ${c}`)}
-              {inp(cls[c], (v) => setCls({ ...cls, [c]: v }), 'rate', `Rendement ${c}`)}
-              {inp(cls[c], (v) => setCls({ ...cls, [c]: v }), 'monthly', `Versement ${c}`)}
-            </span>
+          <div className="simrow" key={c}>
+            <span className="simname"><i className="dot" style={{ background: colorOf(c) }} /> {c}</span>
+            <label className="fld"><span>Capital de départ (€)</span>{inp(cls[c], (v) => setCls({ ...cls, [c]: v }), 'start', `Capital ${c}`)}</label>
+            <label className="fld"><span>Rendement (% par an)</span>{inp(cls[c], (v) => setCls({ ...cls, [c]: v }), 'rate', `Rendement ${c}`)}</label>
+            <label className="fld"><span>Versement (€ par mois)</span>{inp(cls[c], (v) => setCls({ ...cls, [c]: v }), 'monthly', `Versement ${c}`)}</label>
           </div>
         ))
       )}
-      {mode === 'classe' && <p className="hint">Colonnes : capital €, rendement %/an, versement €/mois. Les capitaux de départ sont ceux de ton patrimoine actuel.</p>}
+      {mode === 'classe' && <p className="hint">Les capitaux de départ reprennent la valeur actuelle de chaque classe ; tu peux les modifier pour simuler un autre scénario.</p>}
 
       <div className="strip" style={{ marginTop: 14 }}>
         <div><span>Valeur à {n} ans</span><b>{eur(res.final)}</b></div>

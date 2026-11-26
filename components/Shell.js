@@ -1,14 +1,19 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { getSupabase } from '../lib/supabase.js';
 import { loadCategories } from '../lib/data.js';
 import { UserContext, displayName } from './User.js';
+import { peekUndo, runUndo, subscribeUndo, clearUndo } from '../lib/undo.js';
+
+const UndoIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3 2 6l3 3M2 6h7a4 4 0 0 1 0 8H6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+);
 
 // [chemin, libellé du menu latéral, libellé court (barre mobile)]
 const NAV = [
-  ['/', 'Tableau de bord', 'Accueil'], ['/transactions', 'Opérations'], ['/import', 'Import'],
+  ['/', 'Tableau de bord', 'Accueil'], ['/transactions', 'Opérations'],
   ['/pots', 'Pots'], ['/patrimoine', 'Patrimoine'], ['/reglages', 'Réglages'],
 ];
 
@@ -62,13 +67,45 @@ export default function Shell({ children }) {
     return () => { off = true; };
   }, [uid]);
 
+  const [undoLabel, setUndoLabel] = useState(null);
+  const [toast, setToast] = useState('');
+  useEffect(() => {
+    const f = () => { const i = peekUndo(); setUndoLabel(i ? i.label : null); };
+    f();
+    return subscribeUndo(f);
+  }, []);
+  useEffect(() => { if (!uid) clearUndo(); }, [uid]);
+  const doUndo = useCallback(async () => {
+    try { const l = await runUndo(); if (l) setToast(`Annulé : ${l}`); }
+    catch (e) { setToast(`Annulation impossible : ${(e && e.message) || e}`); }
+  }, []);
+  useEffect(() => {
+    if (!toast) return undefined;
+    const t = setTimeout(() => setToast(''), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+  // Ctrl/Cmd+Z : annule la dernière action, sauf pendant la saisie de texte (annulation native du champ).
+  useEffect(() => {
+    const k = (e) => {
+      if (!((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z')) return;
+      const el = document.activeElement, tag = el && el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el && el.isContentEditable)) return;
+      if (peekUndo()) { e.preventDefault(); doUndo(); }
+    };
+    document.addEventListener('keydown', k);
+    return () => document.removeEventListener('keydown', k);
+  }, [doUndo]);
+
   if (fatal) return <div className="center err">{fatal}</div>;
   if (session === undefined) return <div className="center muted">Chargement…</div>;
   if (!session) return <Login />;
 
   return (
     <div className="app">
-      <header className="mobilebar">Bud-J</header>
+      <header className="mobilebar">
+        <span>Bud-J</span>
+        <button className="undo mob" onClick={doUndo} disabled={!undoLabel} aria-label="Annuler la dernière modification"><UndoIcon /></button>
+      </header>
       <nav className="nav">
         <span className="brand">Bud-J</span>
         {NAV.map(([href, label, short]) => (
@@ -76,12 +113,16 @@ export default function Shell({ children }) {
             {short ? <><span className="lg">{label}</span><span className="sm">{short}</span></> : label}
           </Link>
         ))}
+        <button className="undo desk" onClick={doUndo} disabled={!undoLabel} title={undoLabel ? `Annuler : ${undoLabel} (Ctrl+Z)` : 'Rien à annuler'}>
+          <UndoIcon /> <span>Annuler</span>
+        </button>
       </nav>
       <main className="main">
         {ready
           ? <UserContext.Provider value={{ name: displayName(session.user) }}>{children}</UserContext.Provider>
           : <p className="muted">Chargement…</p>}
       </main>
+      {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   );
 }

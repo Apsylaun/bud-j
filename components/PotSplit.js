@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { eur } from '../lib/format.js';
 import { rpc, r2 } from '../lib/pots.js';
+import { pushUndo } from '../lib/undo.js';
 
 const num = (s) => Number(String(s).replace(',', '.')) || 0;
 
@@ -33,6 +34,8 @@ export default function PotSplit({ tx, nodes, existing, onDone, onCancel }) {
     try {
       const p_lines = clear ? [] : lines.filter((l) => num(l.amount) > 0).map((l) => ({ pot_id: l.pot_id, amount: num(l.amount) }));
       await rpc('save_pot_spend', { p_tx: tx.id, p_lines });
+      const prevLines = existing.map((l) => ({ pot_id: l.pot_id, amount: l.amount }));
+      pushUndo('Imputation à un pot', () => rpc('save_pot_spend', { p_tx: tx.id, p_lines: prevLines }));
       onDone();
     } catch (e) { setErr(e.message); setBusy(false); }
   }
