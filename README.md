@@ -105,3 +105,15 @@ Les colonnes `isin`, `ticker`, `quantity` et `asset_values.price/source` sont d�
   Supprimer une ligne importée puis réimporter le même CSV la recrée.
 - **Pots** : tirelire par pot (remplissage = part de l’objectif), objectifs avec horizon et effort mensuel estimé.
 - **Patrimoine** : hiérarchie type de compte (courant / épargne / investissement) › enveloppe › actif. Import de portefeuille Bourse Direct (.xlsx ou .csv) depuis l’onglet Actifs : nouvelles lignes créées, lignes existantes mises à jour par ISIN, lignes absentes soldées si tu le souhaites.
+
+---
+
+# Bud-J v4
+
+**Mise à jour** : extraire le zip complet à la racine du dépôt, exécuter `supabase/006_pots_detail.sql` dans Supabase (une fois), `git push`.
+
+- **Opérations** : filtres par colonne (année, mois, compte, catégorie, montant) en plus de la recherche. Vue par défaut : mois en cours. Un nouvel ajout reprend les filtres qui n’ont qu’une valeur (catégorie, compte, sens, mois/année).
+  Double-clic sur une cellule (date, année, libellé, compte, montant) pour la modifier ; la catégorie se change d’un clic. Le libellé est tronqué sur une ligne, visible en entier au double-clic. Bouton « Modifier » pour l’édition complète sur mobile.
+- **Pots** : 4 par ligne maximum, couleur modifiable (Gérer › Couleur), clic sur un pot pour son contenu, ses sous-objectifs, son évolution et ses mouvements.
+- **Versements** : la part d’un pot va au sous-objectif non atteint dont l’échéance est la plus proche ; sinon elle reste dans le pot (« Non affecté »).
+- **Tableau de bord** : raccourcis vers Opérations, Pots, Patrimoine, et Réglages en bas de page.

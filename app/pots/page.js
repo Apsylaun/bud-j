@@ -5,10 +5,11 @@ import { getSupabase } from '../../lib/supabase.js';
 import { loadAccounts, loadTransactions } from '../../lib/data.js';
 import {
   loadPots, loadEntries, loadPotMonths, ensureDefaultPots, rpc, ownBalances, buildTree, flatNodes,
-  fundedByTx, monthBounds, lastMonths, monthSurplus, balanceSeries, KIND_LABEL, r2,
+  fundedByTx, monthBounds, lastMonths, monthSurplus, balanceSeries, KIND_LABEL, r2, pickSubgoal, potSeries,
 } from '../../lib/pots.js';
 import { eur, dateFr, monthLabel } from '../../lib/format.js';
-import { colorOf } from '../../lib/categories.js';
+import { registerExtraColors } from '../../lib/categories.js';
+import Colors from '../../components/Colors.js';
 import { Seg } from '../../components/Filters.js';
 import PigBank from '../../components/PigBank.js';
 import { TrendLines } from '../../components/Charts.js';
@@ -28,6 +29,7 @@ export default function Pots() {
         loadPots(), loadEntries(), loadPotMonths(), loadAccounts(),
         Promise.all([loadAssets(), loadValues()]).catch(() => null),
       ]);
+      registerExtraColors(Object.fromEntries(pots.filter((x) => x.color).map((x) => [x.name, x.color])));
       let liquid = null;
       if (w && w[0].length) {
         const lat = latest(groupValues(w[1]));
@@ -59,7 +61,7 @@ export default function Pots() {
       <h1>Pots</h1>
       <Seg value={tab} onChange={setTab} options={TABS} />
       <div style={{ marginTop: 16 }}>
-        {tab === 'vue' && <ViewTab d={d} tree={tree} />}
+        {tab === 'vue' && <ViewTab d={d} tree={tree} reload={reload} />}
         {tab === 'mois' && <MonthTab d={d} tree={tree} reload={reload} />}
         {tab === 'mouvements' && <MovesTab d={d} tree={tree} reload={reload} />}
         {tab === 'gerer' && <ManageTab d={d} tree={tree} reload={reload} />}
@@ -68,81 +70,137 @@ export default function Pots() {
   );
 }
 
-function Detail({ pot, entries }) {
-  const list = entries.filter((e) => e.pot_id === pot.id).sort((a, b) => b.date.localeCompare(a.date));
-  const sum = (f) => r2(list.filter(f).reduce((s, e) => s + Number(e.amount), 0));
-  if (!list.length) return <p className="muted">Aucun mouvement.</p>;
+const monthsLeft = (iso) => Math.max(1, Math.ceil((new Date(iso + 'T00:00:00Z') - new Date()) / (30.44 * 86400000)));
+
+function goalInfo(pot, bal) {
+  if (!pot.target) return pot.target_date ? `avant ${monthLabel(pot.target_date.slice(0, 7))}` : 'Sans objectif';
+  const parts = [`${Math.max(0, Math.round((bal / pot.target) * 100))} % de ${eur(pot.target)}`];
+  if (pot.target_date) {
+    const late = new Date(pot.target_date + 'T00:00:00Z') < new Date();
+    const missing = pot.target - bal;
+    parts.push(late ? 'échéance dépassée' : `avant ${monthLabel(pot.target_date.slice(0, 7))}`);
+    if (!late && missing > 0) parts.push(`≈ ${eur(missing / monthsLeft(pot.target_date))}/mois`);
+  }
+  return parts.join(' · ');
+}
+
+function PigCard({ pot, maxBal, onOpen }) {
+  const bal = pot.total;
+  const pct = pot.target ? bal / pot.target : maxBal > 0 ? bal / maxBal : 0;
   return (
-    <div className="detail">
-      <p className="hint">
-        Alimenté : allocations {eur(sum((e) => e.kind === 'alloc' && e.amount > 0))}, reçu {eur(sum((e) => e.kind === 'transfer' && e.amount > 0))}, solde initial {eur(sum((e) => e.kind === 'opening'))}.
-        {' '}Sorti : dépenses {eur(-sum((e) => e.kind === 'spend'))}, envoyé {eur(-sum((e) => e.kind === 'transfer' && e.amount < 0))}.
-      </p>
-      {list.slice(0, 15).map((e) => (
+    <button className="pig" onClick={onOpen} aria-label={`Ouvrir le pot ${pot.name}`}>
+      <PigBank fill={bal > 0 ? pct : 0} color={pot.color} negative={bal < 0} label={`Pot ${pot.name}`} />
+      <span className="pname">{pot.name}</span>
+      <b className={bal < 0 ? 'neg' : ''}>{eur(bal)}</b>
+      <small>{goalInfo(pot, bal)}</small>
+      {pot.kids.length > 0 && <small>{pot.kids.length} sous-objectif{pot.kids.length > 1 ? 's' : ''}</small>}
+    </button>
+  );
+}
+
+function PotDetail({ pot, d, reload, onBack }) {
+  const [limit, setLimit] = useState(30);
+  const [f, setF] = useState({ name: '', target: '', date: '' });
+  const [msg, setMsg] = useState('');
+  const kids = pot.kids;
+  const names = useMemo(() => Object.fromEntries([[pot.id, 'Non affecté'], ...kids.map((k) => [k.id, k.name])]), [pot, kids]);
+  const entries = useMemo(
+    () => d.entries.filter((e) => names[e.pot_id]).sort((a, b) => b.date.localeCompare(a.date)),
+    [d.entries, names]
+  );
+  const series = useMemo(() => potSeries(pot, d.entries), [pot, d.entries]);
+  const next = pickSubgoal(kids, d.entries, new Date().toISOString().slice(0, 10), null);
+  const kidsTotal = r2(kids.reduce((s, k) => s + k.balance, 0));
+  const lines = [
+    { key: 'Total', label: 'Total', color: pot.color },
+    ...(kids.length ? [{ key: 'Non affecté', label: 'Non affecté', color: '#9AA0A6', dash: '5 4' }] : []),
+    ...kids.map((k) => ({ key: k.name, label: k.name, color: k.color })),
+  ];
+
+  async function addKid(e) {
+    e.preventDefault(); setMsg('');
+    const { error } = await getSupabase().from('pots').insert({
+      name: f.name.trim(), parent_id: pot.id, target: f.target ? num(f.target) : null,
+      target_date: f.date || null, sort: d.pots.length,
+    });
+    if (error) return setMsg(error.message);
+    setF({ name: '', target: '', date: '' }); reload();
+  }
+
+  return (
+    <>
+      <button className="btn ghost sm" onClick={onBack}>← Tous les pots</button>
+      <div className="potdetail-head">
+        <PigBank fill={pot.target ? Math.max(0, pot.total) / pot.target : 0} color={pot.color} negative={pot.total < 0} label={`Pot ${pot.name}`} />
+        <div>
+          <h2><i className="dot" style={{ background: pot.color }} /> {pot.name}</h2>
+          <b className={'big' + (pot.total < 0 ? ' neg' : '')}>{eur(pot.total, 2)}</b>
+          <span className="hint">{goalInfo(pot, pot.total)}</span>
+        </div>
+      </div>
+
+      <h2>Contenu</h2>
+      <div className="strip">
+        <div><span>Total</span><b>{eur(pot.total)}</b></div>
+        <div><span>Non affecté</span><b className={pot.own < 0 ? 'neg' : ''}>{eur(pot.own)}</b></div>
+        <div><span>Sous-objectifs</span><b>{eur(kidsTotal)}</b></div>
+      </div>
+
+      <h2>Sous-objectifs</h2>
+      {kids.length === 0 && <p className="muted">Aucun sous-objectif. Ajoutes-en un ci-dessous : il recevra les versements de ce pot jusqu’à son échéance.</p>}
+      {[...kids].sort((a, b) => (a.target_date || '9').localeCompare(b.target_date || '9')).map((k) => (
+        <div className="goalrow" key={k.id}>
+          <div className="item" style={{ borderBottom: 0, paddingBottom: 2 }}>
+            <span>
+              <i className="dot" style={{ background: k.color }} /> {k.name}
+              {next && next.id === k.id && <span className="badge">reçoit les prochains versements</span>}
+            </span>
+            <b className={k.balance < 0 ? 'neg' : ''}>{eur(k.balance, 2)}</b>
+          </div>
+          {k.target ? <div className="track2"><span style={{ width: `${Math.max(0, Math.min(100, (k.balance / k.target) * 100))}%`, background: k.color }} /></div> : null}
+          <p className="hint" style={{ margin: '2px 0 4px' }}>{goalInfo(k, k.balance)}</p>
+        </div>
+      ))}
+      <form className="form" onSubmit={addKid} style={{ marginTop: 10 }}>
+        <input type="text" placeholder="Nouveau sous-objectif" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required />
+        <input type="text" inputMode="decimal" className="num" placeholder="Objectif €" value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} />
+        <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} aria-label="Échéance" />
+        <button className="btn">Ajouter</button>
+      </form>
+      {msg && <p className="err">{msg}</p>}
+      <p className="hint">Chaque versement mensuel va au sous-objectif non atteint dont l’échéance est la plus proche ; sans sous-objectif éligible, il reste dans « Non affecté ».</p>
+
+      <h2>Évolution</h2>
+      <div className="panel"><TrendLines data={series} series={lines} /></div>
+
+      <h2>Détails</h2>
+      {entries.length === 0 && <p className="muted">Aucun mouvement.</p>}
+      {entries.slice(0, limit).map((e) => (
         <div className="item" key={e.id}>
           <span>
             {dateFr(e.date)} {KIND_LABEL[e.kind]}
             <span className="muted"> {e.kind === 'alloc' ? monthLabel(e.month) : e.note || ''}</span>
+            {kids.length > 0 && <span className="badge">{names[e.pot_id]}</span>}
           </span>
           <span className={'amt' + (e.amount > 0 ? ' pos' : '')}>{eur(e.amount, 2)}</span>
         </div>
       ))}
-      {list.length > 15 && <p className="muted">… {list.length - 15} mouvements plus anciens.</p>}
-    </div>
-  );
-}
-
-function PotLine({ pot, balance, open, onToggle, entries, indent }) {
-  const pct = pot.target ? Math.max(0, Math.min(100, (balance / pot.target) * 100)) : null;
-  return (
-    <>
-      <button className={'potline' + (indent ? ' kid' : '')} onClick={onToggle} aria-expanded={open}>
-        <span className="dot" style={{ background: colorOf(pot.name) }} />
-        <span className="pname">{pot.name}</span>
-        <b className={balance < 0 ? 'neg' : ''}>{eur(balance, 2)}</b>
-        {pct !== null && (
-          <span className="track" title={`Objectif ${eur(pot.target)}`}><span style={{ width: `${pct}%`, background: colorOf(pot.name) }} /></span>
-        )}
-      </button>
-      {balance < 0 && <p className="warn">Pot en découvert : réajuste une allocation passée (onglet Mois) ou déplace des fonds.</p>}
-      {open && <Detail pot={pot} entries={entries} />}
+      {entries.length > limit && <button className="btn ghost more" onClick={() => setLimit((l) => l + 30)}>Afficher plus</button>}
     </>
   );
 }
 
-const monthsLeft = (iso) => Math.max(1, Math.ceil((new Date(iso + 'T00:00:00Z') - new Date()) / (30.44 * 86400000)));
-
-function PigCard({ pot, maxBal }) {
-  const bal = pot.total;
-  const pct = pot.target ? bal / pot.target : maxBal > 0 ? bal / maxBal : 0;
-  const late = pot.target_date && new Date(pot.target_date + 'T00:00:00Z') < new Date();
-  const missing = pot.target ? pot.target - bal : 0;
-  return (
-    <div className="pig">
-      <PigBank fill={bal > 0 ? pct : 0} color={colorOf(pot.name)} negative={bal < 0} label={`Tirelire ${pot.name}`} />
-      <span className="pname">{pot.name}</span>
-      <b className={bal < 0 ? 'neg' : ''}>{eur(bal)}</b>
-      {pot.target ? <small>{Math.max(0, Math.round((bal / pot.target) * 100))} % de {eur(pot.target)}</small> : <small>Sans objectif</small>}
-      {pot.target_date && (
-        <small>
-          {late ? 'Échéance dépassée' : `avant ${monthLabel(pot.target_date.slice(0, 7))}`}
-          {!late && missing > 0 ? ` · ≈ ${eur(missing / monthsLeft(pot.target_date))}/mois` : ''}
-        </small>
-      )}
-    </div>
-  );
-}
-
-function ViewTab({ d, tree }) {
-  const [open, setOpen] = useState({});
+function ViewTab({ d, tree, reload }) {
+  const [selId, setSelId] = useState(null);
+  const sel = tree.find((m) => m.id === selId);
   const total = r2(tree.reduce((s, m) => s + m.total, 0));
   const nodes = flatNodes(tree);
   const negatives = nodes.filter((n) => n.balance < 0).length;
   const last = d.months.find((m) => m.closed);
   const series = useMemo(() => balanceSeries(tree, d.entries), [tree, d.entries]);
-  const lines = [...tree.map((m) => ({ key: m.name, label: m.name, color: colorOf(m.name) })), { key: 'Total', label: 'Total', color: '#7A8FA6', dash: '5 4' }];
-  const tog = (id) => setOpen((o) => ({ ...o, [id]: !o[id] }));
+  const lines = [...tree.map((m) => ({ key: m.name, label: m.name, color: m.color })), { key: 'Total', label: 'Total', color: '#7A8FA6', dash: '5 4' }];
   const maxBal = Math.max(0, ...tree.map((m) => m.total));
+  if (sel) return <PotDetail pot={sel} d={d} reload={reload} onBack={() => setSelId(null)} />;
   return (
     <>
       <div className="strip">
@@ -156,24 +214,11 @@ function ViewTab({ d, tree }) {
           {d.liquid - total < 0 ? ' Les pots dépassent tes liquidités : vérifie les soldes saisis.' : ' Les pots sont virtuels : cet écart est l’argent non affecté.'}
         </p>
       )}
-      <h2>Tirelires</h2>
-      <div className="pigs">{tree.map((m) => <PigCard key={m.id} pot={m} maxBal={maxBal} />)}</div>
-      <p className="hint">Remplissage : part de l’objectif, ou taille relative au plus gros pot si le pot n’a pas d’objectif.</p>
+      <h2>Pots</h2>
+      <div className="pigs">{tree.map((m) => <PigCard key={m.id} pot={m} maxBal={maxBal} onOpen={() => setSelId(m.id)} />)}</div>
+      <p className="hint">Touche un pot pour voir son contenu, ses sous-objectifs, son évolution et ses mouvements. Remplissage : part de l’objectif, ou taille relative au plus gros pot sans objectif.</p>
       <h2>Évolution</h2>
       <div className="panel"><TrendLines data={series} series={lines} /></div>
-      <h2>Détail</h2>
-      <div className="list">
-        {tree.map((m) => (
-          <div className="potgroup" key={m.id}>
-            <PotLine pot={m} balance={m.total} open={!!open[m.id]} onToggle={() => tog(m.id)} entries={d.entries} />
-            {m.kids.length > 0 && m.own !== m.total && <p className="muted kidhint">dont {eur(m.own, 2)} non affectés à un sous-pot</p>}
-            {m.kids.map((k) => (
-              <PotLine key={k.id} indent pot={k} balance={k.balance} open={!!open[k.id]} onToggle={() => tog(k.id)} entries={d.entries} />
-            ))}
-          </div>
-        ))}
-      </div>
-      <p className="hint">Touche un pot pour voir ses sources d’alimentation et ses sorties. Un sous-pot s’alimente depuis l’onglet Mouvements.</p>
     </>
   );
 }
@@ -206,6 +251,8 @@ function MonthTab({ d, tree, reload }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, d.months]);
 
+  const monthEnd = monthBounds(month).to;
+  const subDest = (m) => pickSubgoal(m.kids, d.entries, monthEnd, month);
   const cur = monthSurplus(txs, byId, funded);
   const snapDiffers = row && row.surplus !== null && Math.abs(Number(row.surplus) - cur.net) > 0.005;
   const surplus = snapDiffers && base === 'snap' ? Number(row.surplus) : cur.net;
@@ -248,12 +295,13 @@ function MonthTab({ d, tree, reload }) {
       )}
 
       <h2>Répartition</h2>
+      <p className="hint">Chaque part alimente d’abord le sous-objectif non atteint dont l’échéance est la plus proche (→).</p>
       {surplus < 0 ? (
         <p className="warn">Déficit de {eur(-surplus, 2)} : il sera débité du pot Imprévu. Les pourcentages ne s’appliquent pas.</p>
       ) : null}
       {mains.map((m) => (
         <div className="item" key={m.id}>
-          <span><i className="dot" style={{ background: colorOf(m.name) }} /> {m.name}</span>
+          <span><i className="dot" style={{ background: m.color }} /> {m.name}{subDest(m) && <span className="muted"> → {subDest(m).name}</span>}</span>
           <span className="form">
             <span className="muted">{surplus > 0 ? eur((surplus * num(pcts[m.id] ?? 0)) / 100, 2) : ''}</span>
             <input type="text" inputMode="decimal" className="num" value={pcts[m.id] ?? ''} placeholder="0"
@@ -263,7 +311,7 @@ function MonthTab({ d, tree, reload }) {
       ))}
       {rest && (
         <div className="item">
-          <span><i className="dot" style={{ background: colorOf(rest.name) }} /> {rest.name} <span className="muted">(le solde)</span></span>
+          <span><i className="dot" style={{ background: rest.color }} /> {rest.name} <span className="muted">(le solde)</span>{subDest(rest) && <span className="muted"> → {subDest(rest).name}</span>}</span>
           <span className={restPct < 0 ? 'neg' : ''}>{surplus > 0 ? eur((surplus * Math.max(restPct, 0)) / 100, 2) + ' · ' : ''}{restPct} %</span>
         </div>
       )}
@@ -332,7 +380,7 @@ function MovesTab({ d, tree, reload }) {
         <button className="btn" disabled={busy}>Déplacer</button>
       </form>
       {after !== null && after < 0 && <p className="warn">« {from.label} » passera à {eur(after, 2)}.</p>}
-      <p className="hint">Pot → sous-pot : réserve une part d’un pot pour un projet (un voyage précis, un placement). Le total du pot ne change pas.</p>
+      <p className="hint">Pot → sous-objectif : réserve une part d’un pot pour un sous-objectif (un voyage précis, un placement). Le total du pot ne change pas.</p>
 
       <h2>Soldes initiaux</h2>
       <div className="form">
@@ -353,6 +401,7 @@ function MovesTab({ d, tree, reload }) {
 function ManageTab({ d, tree, reload }) {
   const [f, setF] = useState({ name: '', parent: '', target: '', date: '' });
   const [goalFor, setGoalFor] = useState(null);
+  const [paint, setPaint] = useState(null);
   const [g, setG] = useState({ target: '', date: '' });
   const [msg, setMsg] = useState('');
   const sb = getSupabase();
@@ -386,7 +435,7 @@ function ManageTab({ d, tree, reload }) {
     });
   };
   const del = (p, kids) => {
-    const warn = hasEntries(p.id) || kids ? ' Son historique (et celui de ses sous-pots) sera perdu.' : '';
+    const warn = hasEntries(p.id) || kids ? ' Son historique (et celui de ses sous-objectifs) sera perdu.' : '';
     if (window.confirm(`Supprimer « ${p.name} » ?${warn}`)) attempt(() => sb.from('pots').delete().eq('id', p.id));
   };
   const row = (p, kids, indent) => (
@@ -401,9 +450,11 @@ function ManageTab({ d, tree, reload }) {
         <span className="form">
           <button className="btn ghost sm" onClick={() => rename(p)}>Renommer</button>
           <button className="btn ghost sm" onClick={() => openGoal(p)}>Objectif</button>
+          <button className="btn ghost sm" onClick={() => setPaint(paint === p.id ? null : p.id)}>Couleur</button>
           {!p.role && <button className="btn danger sm" onClick={() => del(p, kids)}>Supprimer</button>}
         </span>
       </div>
+      {paint === p.id && <Colors value={p.color} onPick={(c) => attempt(() => sb.from('pots').update({ color: c }).eq('id', p.id))} />}
       {goalFor === p.id && (
         <div className="form" style={{ padding: '6px 0 10px' }}>
           <input type="text" inputMode="decimal" className="num" placeholder="Montant €" value={g.target} onChange={(e) => setG({ ...g, target: e.target.value })} aria-label="Objectif" />
@@ -418,7 +469,7 @@ function ManageTab({ d, tree, reload }) {
   return (
     <>
       {msg && <div className="warn">{msg}</div>}
-      <h2>Pots et sous-pots</h2>
+      <h2>Pots et sous-objectifs</h2>
       {tree.map((m) => (
         <div key={m.id}>{row(m, m.kids.length > 0, false)}{m.kids.map((k) => row(k, false, true))}</div>
       ))}
@@ -427,13 +478,13 @@ function ManageTab({ d, tree, reload }) {
         <input type="text" placeholder="Nom" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required />
         <select value={f.parent} onChange={(e) => setF({ ...f, parent: e.target.value })} aria-label="Rattaché à">
           <option value="">Pot principal</option>
-          {tree.map((m) => <option key={m.id} value={m.id}>Sous-pot de {m.name}</option>)}
+          {tree.map((m) => <option key={m.id} value={m.id}>Sous-objectif de {m.name}</option>)}
         </select>
         <input type="text" inputMode="decimal" className="num" placeholder="Objectif €" value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} />
         <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} aria-label="Horizon de l’objectif" />
         <button className="btn">Ajouter</button>
       </form>
-      <p className="hint">L’horizon sert à calculer l’effort mensuel restant sur la tirelire. Seuls les pots principaux reçoivent une part de l’excédent mensuel ; « Reste » et « Imprévu » sont obligatoires.</p>
+      <p className="hint">L’horizon sert à calculer l’effort mensuel restant sur le pot. Seuls les pots principaux reçoivent une part de l’excédent mensuel ; « Reste » et « Imprévu » sont obligatoires.</p>
     </>
   );
 }

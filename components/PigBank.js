@@ -2,7 +2,7 @@
 import { useId } from 'react';
 
 // Tirelire simplifiée : le niveau de remplissage (0 à 1) monte dans le corps.
-export default function PigBank({ fill = 0, color = '#7C9A82', negative = false, label = 'Tirelire' }) {
+export default function PigBank({ fill = 0, color = '#7C9A82', negative = false, label = 'Pot' }) {
   const id = useId().replace(/:/g, '');
   const f = Math.max(0, Math.min(1, fill));
   const top = 90 - f * 60;

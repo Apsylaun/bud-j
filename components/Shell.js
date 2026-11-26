@@ -6,8 +6,9 @@ import { getSupabase } from '../lib/supabase.js';
 import { loadCategories } from '../lib/data.js';
 import { UserContext, displayName } from './User.js';
 
+// [chemin, libellé du menu latéral, libellé court (barre mobile)]
 const NAV = [
-  ['/', 'Accueil'], ['/transactions', 'Opérations'], ['/import', 'Import'],
+  ['/', 'Tableau de bord', 'Accueil'], ['/transactions', 'Opérations'], ['/import', 'Import'],
   ['/pots', 'Pots'], ['/patrimoine', 'Patrimoine'], ['/reglages', 'Réglages'],
 ];
 
@@ -70,8 +71,10 @@ export default function Shell({ children }) {
       <header className="mobilebar">Bud-J</header>
       <nav className="nav">
         <span className="brand">Bud-J</span>
-        {NAV.map(([href, label]) => (
-          <Link key={href} href={href} className={(href === '/' ? path === '/' : path.startsWith(href)) ? 'on' : ''}>{label}</Link>
+        {NAV.map(([href, label, short]) => (
+          <Link key={href} href={href} className={(href === '/' ? path === '/' : path.startsWith(href)) ? 'on' : ''}>
+            {short ? <><span className="lg">{label}</span><span className="sm">{short}</span></> : label}
+          </Link>
         ))}
       </nav>
       <main className="main">

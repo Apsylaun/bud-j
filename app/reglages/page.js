@@ -4,20 +4,10 @@ import { getSupabase } from '../../lib/supabase.js';
 import { loadAccounts, loadRules, loadBalances, reapplyRules, loadCategories } from '../../lib/data.js';
 import { categoryNames, SWATCHES, KIND_LABEL, PROTECTED_KINDS } from '../../lib/categories.js';
 import { Tag } from '../../components/Tag.js';
+import Colors from '../../components/Colors.js';
 import { eur, dateFr } from '../../lib/format.js';
 
 const BANKS = ['Crédit Agricole', 'Fortuneo', 'Crédit Mutuel', 'Bourse Direct', 'Autre'];
-
-function Colors({ value, onPick }) {
-  return (
-    <div className="swatches">
-      {SWATCHES.map((c) => (
-        <button key={c} type="button" className={value === c ? 'on' : ''} style={{ background: c }} onClick={() => onPick(c)} aria-label={`Couleur ${c}`} />
-      ))}
-      <input type="color" value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#9AA0A6'} onChange={(e) => onPick(e.target.value)} aria-label="Couleur personnalisée" />
-    </div>
-  );
-}
 
 export default function Reglages() {
   const [accounts, setAccounts] = useState([]);

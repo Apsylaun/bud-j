@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { loadAccounts, loadTransactions } from '../lib/data.js';
 import { summarize, totals, agg, byMonth, pivot, sankey, seriesByCategory, inScope } from '../lib/analytics.js';
-import { UNCATEGORIZED, categoryList, colorOf } from '../lib/categories.js';
+import { UNCATEGORIZED, categoryList, colorOf, registerExtraColors } from '../lib/categories.js';
 import { eur, resolvePeriod } from '../lib/format.js';
 import { PeriodPicker, Seg } from '../components/Filters.js';
 import { useUser } from '../components/User.js';
@@ -41,7 +41,7 @@ export default function Dashboard() {
       loadTransactions({ ...range, select: 'id,account_id,date,amount,category' }),
       Promise.all([loadPots(), loadEntries(), loadPotMonths()]).catch(() => [[], [], []]),
     ])
-      .then(([a, t, p]) => { if (!off) { setAccounts(a); setTxs(t); setPd({ pots: p[0], entries: p[1], months: p[2] }); setState({ loading: false, error: null }); } })
+      .then(([a, t, p]) => { if (!off) { registerExtraColors(Object.fromEntries(p[0].filter((x) => x.color).map((x) => [x.name, x.color]))); setAccounts(a); setTxs(t); setPd({ pots: p[0], entries: p[1], months: p[2] }); setState({ loading: false, error: null }); } })
       .catch((e) => { if (!off) setState({ loading: false, error: e.message }); });
     return () => { off = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -126,6 +126,13 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
+      <div className="shortcuts">
+        <Link href="/transactions" className="tile"><b>Opérations</b><span>Filtrer, corriger et ajouter des lignes</span></Link>
+        <Link href="/pots" className="tile"><b>Pots</b><span>Épargne par objectif</span></Link>
+        <Link href="/patrimoine" className="tile"><b>Patrimoine</b><span>Actifs, évolution, simulateur</span></Link>
+      </div>
+      <p className="settings-link"><Link href="/reglages" className="btn ghost sm">Réglages</Link></p>
     </>
   );
 }
