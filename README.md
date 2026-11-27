@@ -122,7 +122,7 @@ Les colonnes `isin`, `ticker`, `quantity` et `asset_values.price/source` sont d�
 
 # Bud-J v5
 
-**Mise à jour** : extraire le zip complet à la racine du dépôt, exécuter **`supabase/007_update.sql`** dans Supabase (une fois ; il contient 005 et 006 et peut être relancé sans danger), puis `git push`.
+**Mise à jour** : extraire le zip complet à la racine du dépôt, exécuter **`supabase/008_update.sql`** dans Supabase (une fois ; il contient 005 et 006 et peut être relancé sans danger), puis `git push`.
 Il corrige l’erreur « Could not find the 'account_kind' column… » et recharge le cache du schéma.
 
 - **Annuler** : bouton « Annuler » (menu latéral, en haut à droite sur mobile) et Ctrl/Cmd+Z hors saisie de texte. Pile de 30 actions, vidée au rechargement. Non annulables : suppression d’un compte, d’une catégorie, d’un pot ou d’un actif, import de portefeuille, soldes initiaux.
@@ -130,3 +130,16 @@ Il corrige l’erreur « Could not find the 'account_kind' column… » et recha
 - **Réglages** : catégories repliables, bouton « Modifier » (nom, couleur, nature), « Suppr. ».
 - **Pots** : répartition par curseurs, remplissage conservé sur la page d’un pot, sous-objectifs modifiables avec emoji.
 - **Patrimoine** : libellés explicites dans le simulateur.
+
+---
+
+# Bud-J v6
+
+**Mise à jour** : extraire le zip complet à la racine du dépôt, exécuter **`supabase/008_update.sql`** dans Supabase (une fois ; cumulatif, il remplace 005 à 007 et peut être relancé sans danger), puis `git push`.
+
+- **Design** : fond blanc, titres en écriture script, colorés par section (Opérations turquoise, Pots rose, Patrimoine violet).
+- **Définitions** : les termes techniques (PRU, +/- value, enveloppe, ISIN, excédent, sous-objectif…) ont une définition courte au survol ou au toucher.
+- **Tableau de bord** : blocs Mes comptes (variation M-1), Opérations (3 derniers mois : en cours / à faire / fait), Prochain objectif, Patrimoine (total et variation M-1).
+- **Opérations** : colonnes réordonnables par glisser-déposer des en-têtes (ordre mémorisé sur l’appareil).
+- **Réglages** : un compte a une banque, un type d’enveloppe et un type de compte (déduit de l’enveloppe). Groupes de catégories (Revenus, Autre, Loyer, Vie quotidienne, Pots) qui alimentent le schéma de flux.
+- **Patrimoine** : un actif se rattache à un compte et hérite de sa banque, de son enveloppe et de son type. Mise en page : total + courbe, répartition en anneau, tableau filtrable et groupé. Pour les actifs créés avant cette version, un bouton crée les comptes à partir des anciennes enveloppes.

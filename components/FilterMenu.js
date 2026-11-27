@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react';
 
 // Bouton de filtre avec menu déroulant (se ferme au clic à l'extérieur).
-export function FilterMenu({ label, summary, active, children }) {
+export function FilterMenu({ label, summary, active, children, className = '', align }) {
   const ref = useRef(null);
   useEffect(() => {
     const close = (e) => { if (ref.current && ref.current.open && !ref.current.contains(e.target)) ref.current.open = false; };
@@ -10,9 +10,9 @@ export function FilterMenu({ label, summary, active, children }) {
     return () => document.removeEventListener('mousedown', close);
   }, []);
   return (
-    <details className="fmenu" ref={ref}>
+    <details className={'fmenu ' + className} ref={ref}>
       <summary className={active ? 'on' : ''}>{label}{summary ? ` : ${summary}` : ''}</summary>
-      <div className="fpop">{children}</div>
+      <div className={'fpop' + (align === 'right' ? ' right' : '')}>{children}</div>
     </details>
   );
 }

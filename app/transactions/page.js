@@ -20,6 +20,37 @@ const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet'
 const pad = (n) => String(n).padStart(2, '0');
 const today = () => new Date().toISOString().slice(0, 10);
 const num = (s) => Number(String(s).replace(',', '.')) || 0;
+// Colonnes réordonnables (glisser-déposer des en-têtes), ordre mémorisé sur l'appareil.
+const COLS = { date: ['Date', '50px'], year: ['Année', '46px'], label: ['Libellé', 'minmax(0,1fr)'], account: ['Compte', '140px'], category: ['Catégorie', '170px'], amount: ['Montant', '96px'] };
+const DEFAULT_ORDER = ['date', 'year', 'label', 'account', 'category', 'amount'];
+
+function useWide() {
+  const [wide, setWide] = useState(false);
+  useEffect(() => {
+    const m = window.matchMedia('(min-width: 900px)');
+    const f = () => setWide(m.matches);
+    f();
+    m.addEventListener('change', f);
+    return () => m.removeEventListener('change', f);
+  }, []);
+  return wide;
+}
+
+function useColumnOrder() {
+  const [order, setOrder] = useState(DEFAULT_ORDER);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('budj.cols') || 'null');
+      if (Array.isArray(saved) && saved.length === DEFAULT_ORDER.length && DEFAULT_ORDER.every((k) => saved.includes(k))) setOrder(saved);
+    } catch (e) { /* ordre par défaut */ }
+  }, []);
+  const save = (o) => {
+    setOrder(o);
+    try { localStorage.setItem('budj.cols', JSON.stringify(o)); } catch (e) { /* stockage indisponible */ }
+  };
+  return [order, save];
+}
+
 const EMPTY = { years: [], months: [], accounts: [], cats: [], sens: '', min: '', max: '' };
 
 const PlusIcon = () => <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>;
@@ -47,7 +78,7 @@ function defaultsFromFilters(f) {
 }
 
 // Cellule modifiable par double-clic : Entrée valide, Échap annule.
-function Editable({ value, display, type = 'text', options, onSave, className = '', title }) {
+function Editable({ value, display, type = 'text', options, onSave, className = '', title, style }) {
   const [edit, setEdit] = useState(false);
   const [v, setV] = useState('');
   const cancelled = useRef(false);
@@ -57,11 +88,11 @@ function Editable({ value, display, type = 'text', options, onSave, className = 
     setEdit(false);
     if (String(nv) !== String(value)) onSave(nv);
   };
-  if (!edit) return <span className={className} title={title} onDoubleClick={start}>{display}</span>;
+  if (!edit) return <span className={className} style={style} title={title} onDoubleClick={start}>{display}</span>;
   const cls = `inl ${className}`;
   if (type === 'select') {
     return (
-      <select autoFocus className={cls} value={v} onChange={(e) => commit(e.target.value)} onBlur={() => setEdit(false)}>
+      <select autoFocus style={style} className={cls} value={v} onChange={(e) => commit(e.target.value)} onBlur={() => setEdit(false)}>
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     );
@@ -70,7 +101,7 @@ function Editable({ value, display, type = 'text', options, onSave, className = 
     if (e.key === 'Escape') { cancelled.current = true; setEdit(false); }
     else if (e.key === 'Enter' && !(type === 'textarea' && e.shiftKey)) { e.preventDefault(); commit(v); }
   };
-  const common = { autoFocus: true, className: cls, value: v, onChange: (e) => setV(e.target.value), onBlur: () => commit(v), onKeyDown: keys };
+  const common = { autoFocus: true, style, className: cls, value: v, onChange: (e) => setV(e.target.value), onBlur: () => commit(v), onKeyDown: keys };
   if (type === 'textarea') return <textarea {...common} rows={Math.min(5, Math.max(2, Math.ceil(v.length / 38)))} />;
   return <input {...common} type={type === 'number' ? 'text' : type} inputMode={type === 'number' ? 'decimal' : undefined} />;
 }
@@ -199,9 +230,15 @@ export default function Operations() {
   const [modal, setModal] = useState(null); // 'new' | transaction | null
   const [importing, setImporting] = useState(false);
   const [state, setState] = useState({ loading: true, error: null });
+  const [order, setOrder] = useColumnOrder();
+  const wide = useWide();
+  const [dragKey, setDragKey] = useState(null);
+  const [overKey, setOverKey] = useState(null);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get('todo') === '1') setFlt({ ...EMPTY, cats: [TODO] });
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get('todo') === '1') setFlt({ ...EMPTY, cats: [TODO] });
+    else if (/^\d{4}$/.test(sp.get('y') || '') && /^\d{2}$/.test(sp.get('m') || '')) setFlt({ ...EMPTY, years: [sp.get('y')], months: [sp.get('m')] });
   }, []);
   useEffect(() => onDataChange(() => setTick((n) => n + 1)), []);
 
@@ -281,6 +318,19 @@ export default function Operations() {
   }
 
   const set = (p) => setFlt((f) => ({ ...f, ...p }));
+  const gridStyle = wide ? { gridTemplateColumns: [...order.map((k) => COLS[k][1]), '210px'].join(' '), gridTemplateAreas: 'none' } : undefined;
+  const cell = (k) => (wide ? { order: order.indexOf(k), gridArea: 'auto' } : undefined);
+  const actStyle = wide ? { order: 9, gridArea: 'auto' } : undefined;
+  const panelStyle = { order: 20 };
+  const dropOn = (k) => {
+    if (dragKey && dragKey !== k) {
+      const from = order.indexOf(dragKey), to = order.indexOf(k);
+      const o = order.filter((x) => x !== dragKey);
+      o.splice(from < to ? o.indexOf(k) + 1 : o.indexOf(k), 0, dragKey);
+      setOrder(o);
+    }
+    setDragKey(null); setOverKey(null);
+  };
   const active = JSON.stringify(flt) !== JSON.stringify(EMPTY);
   const sumOf = (list, label) => (list.length === 0 ? '' : list.length === 1 ? label(list[0]) : `${list.length}`);
 
@@ -329,38 +379,48 @@ export default function Operations() {
       </div>
 
       {msg && <div className="warn">{msg}</div>}
+      {order.join() !== DEFAULT_ORDER.join() && <button className="btn ghost sm" style={{ marginBottom: 8 }} onClick={() => setOrder(DEFAULT_ORDER)}>Ordre des colonnes par défaut</button>}
       {state.error && <p className="err">{state.error}</p>}
       {!state.loading && !state.error && accounts.length === 0 && <div className="warn">Aucun compte : crée-en un dans Réglages pour ajouter ou importer des opérations.</div>}
       {state.loading ? <p className="muted">Chargement…</p> : (
         <>
           <p className="hint">
-            {shown.length} opération{shown.length > 1 ? 's' : ''} · total {eur(sum, 2)}. Double-clic sur une cellule pour la modifier ; un nouvel ajout reprend les filtres actifs.
+            {shown.length} opération{shown.length > 1 ? 's' : ''} · total {eur(sum, 2)}. Double-clic sur une cellule pour la modifier, glisse les en-têtes pour réordonner les colonnes ; un nouvel ajout reprend les filtres actifs.
           </p>
           {shown.length === 0 ? <p className="muted">Aucune opération avec ces filtres.</p> : (
             <>
-              <div className="txhead"><span>Date</span><span>Année</span><span>Libellé</span><span>Compte</span><span>Catégorie</span><span>Montant</span><span /></div>
+              <div className="txhead" style={gridStyle}>
+                {order.map((k) => (
+                  <span key={k} draggable className={'draggable' + (overKey === k ? ' over' : '')} title="Glisse pour déplacer la colonne"
+                    onDragStart={() => setDragKey(k)} onDragOver={(e) => { e.preventDefault(); setOverKey(k); }}
+                    onDragLeave={() => setOverKey(null)} onDrop={() => dropOn(k)} onDragEnd={() => { setDragKey(null); setOverKey(null); }}>
+                    {COLS[k][0]}
+                  </span>
+                ))}
+                <span />
+              </div>
               <ul className="list" style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
                 {shown.slice(0, limit).map((t) => {
                   const dm = `${t.date.slice(8, 10)}/${t.date.slice(5, 7)}`;
                   const saveDate = (nv) => { if (/^\d{4}-\d{2}-\d{2}$/.test(nv)) patchTx(t, { date: nv }); };
                   return (
-                    <li key={t.id} className="txrow">
-                      <Editable className="c-date muted" type="date" value={t.date} onSave={saveDate}
+                    <li key={t.id} className="txrow" style={gridStyle}>
+                      <Editable className="c-date muted" style={cell('date')} type="date" value={t.date} onSave={saveDate}
                         display={<>{dm}<span className="yr-inline">/{t.date.slice(0, 4)}</span></>} title="Double-clic pour modifier la date" />
-                      <Editable className="c-year muted" type="date" value={t.date} onSave={saveDate} display={t.date.slice(0, 4)} title="Double-clic pour modifier la date" />
-                      <span className="c-label">
+                      <Editable className="c-year muted" style={cell('year')} type="date" value={t.date} onSave={saveDate} display={t.date.slice(0, 4)} title="Double-clic pour modifier la date" />
+                      <span className="c-label" style={cell('label')}>
                         <Editable className="lbl" type="textarea" value={t.label} title={t.label}
                           onSave={(nv) => { if (nv.trim()) patchTx(t, { label: nv.trim() }); }} display={t.label} />
                         {t.comment && <button className="bubble" onClick={() => setNoteFor(noteFor === t.id ? null : t.id)} aria-label="Voir le commentaire" title="Commentaire"><BubbleIcon /></button>}
                       </span>
-                      <Editable className="c-acct muted" type="select" options={accountEdit} value={t.account_id}
+                      <Editable className="c-acct muted" style={cell('account')} type="select" options={accountEdit} value={t.account_id}
                         onSave={(nv) => patchTx(t, { account_id: nv })} display={accById[t.account_id] ? accById[t.account_id].name : ''} />
-                      <span className="c-cat"><TagSelect value={t.category || ''} onChange={(c) => setCategory(t, c)} options={categoryNames()} /></span>
-                      <Editable className={'c-amt amt' + (t.amount > 0 ? ' pos' : '')} type="number" value={String(t.amount)}
+                      <span className="c-cat" style={cell('category')}><TagSelect value={t.category || ''} onChange={(c) => setCategory(t, c)} options={categoryNames()} /></span>
+                      <Editable className={'c-amt amt' + (t.amount > 0 ? ' pos' : '')} style={cell('amount')} type="number" value={String(t.amount)}
                         title="Double-clic pour modifier (négatif = dépense)"
                         onSave={(nv) => { const n = Number(String(nv).replace(',', '.').replace(/\s/g, '')); if (Number.isFinite(n) && n !== 0) patchTx(t, { amount: Math.round(n * 100) / 100 }); }}
                         display={eur(t.amount, 2)} />
-                      <span className="c-act">
+                      <span className="c-act" style={actStyle}>
                         {potData && t.amount < 0 && !(accById[t.account_id] && accById[t.account_id].shared) && (
                           <button className="btn ghost sm" onClick={() => setSplitFor(splitFor === t.id ? null : t.id)} title="Payer avec un ou plusieurs pots">
                             {funded[t.id] ? `Pot ${eur(funded[t.id])}` : 'Pot'}
@@ -370,10 +430,10 @@ export default function Operations() {
                         <button className="btn danger sm" onClick={() => removeTx(t)}>Suppr.</button>
                       </span>
                       {noteFor === t.id && t.comment && (
-                        <div className="c-edit"><div className="note"><span>{t.comment}</span><button className="btn ghost sm" onClick={() => setModal(t)}>Modifier</button></div></div>
+                        <div className="c-edit" style={panelStyle}><div className="note"><span>{t.comment}</span><button className="btn ghost sm" onClick={() => setModal(t)}>Modifier</button></div></div>
                       )}
                       {splitFor === t.id && (
-                        <div className="c-edit">
+                        <div className="c-edit" style={panelStyle}>
                           <PotSplit tx={t} nodes={potNodes} existing={spendLines(t.id)}
                             onDone={() => { setSplitFor(null); setTick((n) => n + 1); }} onCancel={() => setSplitFor(null)} />
                         </div>

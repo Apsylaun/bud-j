@@ -11,6 +11,7 @@ import { eur, dateFr, monthLabel } from '../../lib/format.js';
 import { registerExtraColors } from '../../lib/categories.js';
 import Colors from '../../components/Colors.js';
 import Modal from '../../components/Modal.js';
+import Term from '../../components/Term.js';
 import { pushUndo, snapshotOf, onDataChange } from '../../lib/undo.js';
 import { updateRow } from '../../lib/data.js';
 import { Seg } from '../../components/Filters.js';
@@ -196,11 +197,11 @@ function PotDetail({ pot, d, reload, onBack, maxBal }) {
       <h2>Contenu</h2>
       <div className="strip">
         <div><span>Total</span><b>{eur(pot.total)}</b></div>
-        <div><span>Non affecté</span><b className={pot.own < 0 ? 'neg' : ''}>{eur(pot.own)}</b></div>
-        <div><span>Sous-objectifs</span><b>{eur(kidsTotal)}</b></div>
+        <div><span><Term k="nonaffecte">Non affecté</Term></span><b className={pot.own < 0 ? 'neg' : ''}>{eur(pot.own)}</b></div>
+        <div><span><Term k="sousobjectif">Sous-objectifs</Term></span><b>{eur(kidsTotal)}</b></div>
       </div>
 
-      <h2>Sous-objectifs</h2>
+      <h2><Term k="sousobjectif">Sous-objectifs</Term></h2>
       {kids.length === 0 && <p className="muted">Aucun sous-objectif. Ajoutes-en un ci-dessous : il recevra les versements de ce pot jusqu’à son échéance.</p>}
       {[...kids].sort((a, b) => (a.target_date || '9').localeCompare(b.target_date || '9')).map((k) => (
         <div className="goalrow" key={k.id}>
@@ -348,7 +349,7 @@ function MonthTab({ d, tree, reload }) {
       <div className="strip">
         <div><span>Revenus</span><b>{eur(cur.income)}</b></div>
         <div><span>Dépenses</span><b>{eur(cur.expense)}</b></div>
-        <div><span>Excédent</span><b className={cur.net >= 0 ? 'pos' : 'neg'}>{eur(cur.net)}</b></div>
+        <div><span><Term k="excedent">Excédent</Term></span><b className={cur.net >= 0 ? 'pos' : 'neg'}>{eur(cur.net)}</b></div>
       </div>
       {cur.todo > 0 && <div className="warn">{cur.todo} opération{cur.todo > 1 ? 's' : ''} non catégorisée{cur.todo > 1 ? 's' : ''} ce mois : l’excédent est approximatif. <Link href="/transactions?todo=1">Catégoriser</Link></div>}
       {snapDiffers && (
@@ -522,8 +523,8 @@ function ManageTab({ d, tree, reload }) {
       <div className={'item' + (indent ? ' kid' : '')}>
         <span>
           {p.name}
-          {p.role === 'rest' && <span className="badge">absorbe l’écart</span>}
-          {p.role === 'deficit' && <span className="badge">absorbe les déficits</span>}
+          {p.role === 'rest' && <span className="badge"><Term k="reste">absorbe l’écart</Term></span>}
+          {p.role === 'deficit' && <span className="badge"><Term k="imprevu">absorbe les déficits</Term></span>}
           {p.target ? <span className="badge">objectif {eur(p.target)}{p.target_date ? ` · avant ${monthLabel(p.target_date.slice(0, 7))}` : ''}</span> : null}
         </span>
         <span className="form">

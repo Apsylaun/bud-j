@@ -1,7 +1,7 @@
 'use client';
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Sankey,
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Legend,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Legend, AreaChart, Area,
 } from 'recharts';
 import { colorOf } from '../lib/categories.js';
 import { eur, monthLabel, dateFr } from '../lib/format.js';
@@ -134,14 +134,50 @@ export function WealthChart({ data, long }) {
   if (!data.length) return <Empty />;
   const fmt = (d) => (long ? monthLabel(d.slice(0, 7)) : `${d.slice(8)}/${d.slice(5, 7)}`);
   return (
-    <ResponsiveContainer width="100%" height={280}>
-      <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+    <ResponsiveContainer width="100%" height={250}>
+      <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+        <defs>
+          <linearGradient id="wfill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.28" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
         <CartesianGrid stroke="var(--line)" vertical={false} />
         <XAxis dataKey="date" tickFormatter={fmt} tick={TICK} minTickGap={28} />
         <YAxis width={52} tickFormatter={short} tick={TICK} domain={['auto', 'auto']} />
         <Tooltip labelFormatter={dateFr} formatter={(v) => eur(v)} contentStyle={TIP} />
-        <Line type="linear" dataKey="total" name="Patrimoine" stroke="#2E7D5B" strokeWidth={2} dot={data.length <= 24} isAnimationActive={false} />
-      </LineChart>
+        <Area type="stepAfter" dataKey="total" name="Patrimoine" stroke="var(--accent)" strokeWidth={1.8} fill="url(#wfill)" dot={false} isAnimationActive={false} />
+      </AreaChart>
     </ResponsiveContainer>
+  );
+}
+
+// Anneau avec total au centre et liste des parts (barres pointillées).
+export function Donut({ data, total, label = 'Total' }) {
+  const sum = data.reduce((s, d) => s + d.value, 0);
+  if (!sum) return <Empty />;
+  return (
+    <div className="donutwrap">
+      <div className="donutbox">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={data} dataKey="value" nameKey="name" innerRadius="72%" outerRadius="100%" paddingAngle={1.5} stroke="none" isAnimationActive={false}>
+              {data.map((d) => <Cell key={d.name} fill={d.color || colorOf(d.name)} />)}
+            </Pie>
+            <Tooltip formatter={(v) => eur(v)} contentStyle={TIP} />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="donutcenter"><b>{eur(total)}</b><span>{label}</span></div>
+      </div>
+      <div className="rank">
+        {data.slice(0, 10).map((d) => (
+          <div className="rankrow" key={d.name}>
+            <span className="nm" title={d.name}>{d.name}</span>
+            <span className="bar"><i style={{ '--c': d.color || colorOf(d.name), width: `${(d.value / sum) * 100}%` }} /></span>
+            <em>{((d.value / sum) * 100).toFixed(1).replace('.', ',')} %</em>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

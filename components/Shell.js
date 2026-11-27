@@ -12,6 +12,8 @@ const UndoIcon = () => (
 );
 
 // [chemin, libellé du menu latéral, libellé court (barre mobile)]
+const SECTION = { transactions: 'sec-ops', pots: 'sec-pots', patrimoine: 'sec-pat' };
+
 const NAV = [
   ['/', 'Tableau de bord', 'Accueil'], ['/transactions', 'Opérations'],
   ['/pots', 'Pots'], ['/patrimoine', 'Patrimoine'], ['/reglages', 'Réglages'],
@@ -117,7 +119,7 @@ export default function Shell({ children }) {
           <UndoIcon /> <span>Annuler</span>
         </button>
       </nav>
-      <main className="main">
+      <main className={'main ' + (SECTION[path.split('/')[1]] || '')}>
         {ready
           ? <UserContext.Provider value={{ name: displayName(session.user) }}>{children}</UserContext.Provider>
           : <p className="muted">Chargement…</p>}

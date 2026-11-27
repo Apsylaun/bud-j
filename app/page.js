@@ -1,14 +1,17 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { loadAccounts, loadTransactions } from '../lib/data.js';
+import { loadAccounts, loadTransactions, loadBalanceHistory } from '../lib/data.js';
 import { summarize, totals, agg, byMonth, pivot, sankey, seriesByCategory, inScope } from '../lib/analytics.js';
-import { UNCATEGORIZED, categoryList, colorOf, registerExtraColors } from '../lib/categories.js';
-import { eur, resolvePeriod } from '../lib/format.js';
+import { UNCATEGORIZED, categoryList, colorOf, registerExtraColors, groupOf } from '../lib/categories.js';
+import { eur, resolvePeriod, monthLabel } from '../lib/format.js';
 import { PeriodPicker, Seg } from '../components/Filters.js';
 import { useUser } from '../components/User.js';
+import Term from '../components/Term.js';
+import { Tag } from '../components/Tag.js';
 import { CategoryPie, FlowSankey, TrendLines, PivotTable } from '../components/Charts.js';
-import { loadPots, loadEntries, loadPotMonths, fundedByTx, allocBreakdown } from '../lib/pots.js';
+import { loadPots, loadEntries, loadPotMonths, fundedByTx, allocBreakdown, lastMonths, buildTree, ownBalances } from '../lib/pots.js';
+import { loadAssets, loadValues, groupValues, totalAt, accountValue, monthAgoDate, fmtPct, r2 } from '../lib/wealth.js';
 
 const SCOPES = [['perso', 'Perso'], ['commun', 'Commun'], ['consolide', 'Consolidé']];
 const HINTS = {
@@ -17,11 +20,21 @@ const HINTS = {
   consolide: 'Perso + commun. Les virements vers le commun sont exclus pour éviter le double compte.',
 };
 const TABS = [['repartition', 'Répartition'], ['flux', 'Flux'], ['evolution', 'Évolution'], ['tableau', 'Tableau']];
+const STATUS = { 'En cours': '#5B8DB8', 'À faire': '#E08A3C', 'Fait': '#4CAF7D' };
+
+// Variation affichée sous forme de tag (▲ / ▼).
+function VarTag({ diff, base }) {
+  if (diff === null || diff === undefined) return null;
+  const pct = base ? (diff / base) * 100 : null;
+  return <span className={'vtag' + (diff < 0 ? ' neg' : '')}>{diff < 0 ? '▼' : '▲'} {pct !== null ? fmtPct(Math.abs(pct)).replace('+', '') : eur(Math.abs(diff))}</span>;
+}
 
 export default function Dashboard() {
   const { name } = useUser();
   const [accounts, setAccounts] = useState([]);
   const [txs, setTxs] = useState([]);
+  const [recent, setRecent] = useState([]);
+  const [wealth, setWealth] = useState(null);
   const [period, setPeriod] = useState({ preset: '3m' });
   const [scope, setScope] = useState('perso');
   const [cats, setCats] = useState([]);
@@ -31,6 +44,18 @@ export default function Dashboard() {
   const [state, setState] = useState({ loading: true, error: null });
 
   const filterCats = [...categoryList().filter((c) => c.kind === 'expense' || c.kind === 'transfer_commun').map((c) => c.name), UNCATEGORIZED];
+
+  // Blocs de synthèse (indépendants de la période d'analyse)
+  useEffect(() => {
+    let off = false;
+    const d0 = new Date();
+    const from = new Date(Date.UTC(d0.getFullYear(), d0.getMonth() - 2, 1)).toISOString().slice(0, 10);
+    Promise.all([
+      loadTransactions({ from, select: 'date,category' }).catch(() => []),
+      Promise.all([loadAssets(), loadValues(), loadBalanceHistory()]).catch(() => null),
+    ]).then(([r, w]) => { if (!off) { setRecent(r); setWealth(w ? { assets: w[0], values: w[1], hist: w[2] } : null); } });
+    return () => { off = true; };
+  }, []);
 
   const range = resolvePeriod(period);
   useEffect(() => {
@@ -67,31 +92,119 @@ export default function Dashboard() {
     return {
       data: byMonth(allRows),
       series: [
-        { key: 'income', label: 'Revenus', color: '#7C9A82' },
+        { key: 'income', label: 'Revenus', color: '#4CAF7D' },
         { key: 'expense', label: 'Dépenses', color: '#D4574E' },
         { key: 'net', label: 'Solde', color: '#7A8FA6', dash: '5 4' },
       ],
     };
   }, [rows, allRows, cats]);
 
+  // ----- blocs -----
+  const today = new Date().toISOString().slice(0, 10);
+  const ago = monthAgoDate();
+  const g = useMemo(() => (wealth ? groupValues(wealth.values) : {}), [wealth]);
+  const wTotal = wealth ? totalAt(wealth.assets, g, today) : 0;
+  const wBefore = wealth ? totalAt(wealth.assets, g, ago) : 0;
+  const wDiff = wealth && wBefore > 0 ? r2(wTotal - wBefore) : null;
+
+  const monthRows = lastMonths(3).map((m, i) => {
+    const list = recent.filter((t) => t.date.startsWith(m));
+    const nTodo = list.filter((t) => !t.category).length;
+    let status = 'Fait', note = `${list.length} opération${list.length > 1 ? 's' : ''}`;
+    if (i === 0) status = 'En cours';
+    else if (list.length === 0) { status = 'À faire'; note = 'rien d’importé'; }
+    else if (nTodo > 0) { status = 'À faire'; note = `${nTodo} à catégoriser`; }
+    return { m, status, note };
+  });
+
+  const potTree = useMemo(() => buildTree(pd.pots, ownBalances(pd.entries)), [pd]);
+  const nextGoal = useMemo(() => {
+    const c = [];
+    for (const m of potTree) {
+      if (m.target_date && m.target_date >= today) c.push({ pot: m, bal: m.total, parent: null });
+      for (const k of m.kids) if (k.target_date && k.target_date >= today) c.push({ pot: k, bal: k.balance, parent: m });
+    }
+    c.sort((a, b) => a.pot.target_date.localeCompare(b.pot.target_date));
+    return c[0] || null;
+  }, [potTree, today]);
+
   return (
     <>
       <h1>Tableau de bord{name ? ` ${name}` : ''}</h1>
+
+      <div className="dcard" style={{ marginTop: 0 }}>
+        <h2>Mes comptes · variation M-1</h2>
+        {accounts.length === 0 && !state.loading && <p className="muted" style={{ margin: 0 }}>Aucun compte. <Link href="/reglages">Crée un compte</Link>, puis importe tes opérations depuis <Link href="/transactions">Opérations</Link>.</p>}
+        {accounts.map((a) => {
+          const v = wealth ? accountValue(a, wealth.assets, g, wealth.hist, today) : null;
+          const b = wealth ? accountValue(a, wealth.assets, g, wealth.hist, ago) : null;
+          return (
+            <Link href="/patrimoine" key={a.id} className="accrow" style={{ color: 'inherit', textDecoration: 'none' }}>
+              <span>{a.name}<span className="meta" style={{ display: 'block' }}>{a.bank}{a.envelope ? ` · ${a.envelope}` : ''}{a.shared ? ' · commun' : ''}</span></span>
+              <span className="right">
+                {v === null ? <span className="muted">–</span> : eur(v)}{' '}
+                {v !== null && b !== null && b !== 0 && <VarTag diff={r2(v - b)} base={b} />}
+              </span>
+            </Link>
+          );
+        })}
+        {accounts.length > 0 && <p className="hint" style={{ margin: '8px 0 0' }}>Soldes : actifs liés au compte ou dernier solde importé. <Term k="variation">Variation M-1</Term> = écart avec il y a un mois.</p>}
+      </div>
+
+      <div className="dashgrid">
+        <Link href="/transactions" className="dcard">
+          <h2>Opérations</h2>
+          {monthRows.map((r) => (
+            <div className="mrow" key={r.m}>
+              <span>{monthLabel(r.m)}<small>{r.note}</small></span>
+              <Tag color={STATUS[r.status]}>{r.status}</Tag>
+            </div>
+          ))}
+        </Link>
+
+        {nextGoal ? (
+          <Link href="/pots" className="dcard">
+            <h2>Prochain objectif</h2>
+            <div style={{ fontWeight: 600 }}>{nextGoal.pot.emoji ? `${nextGoal.pot.emoji} ` : ''}{nextGoal.pot.name}{nextGoal.parent ? <span className="muted" style={{ fontWeight: 400 }}> · {nextGoal.parent.name}</span> : null}</div>
+            <div className="big">{eur(nextGoal.bal)}</div>
+            <div className="track2" style={{ marginTop: 6 }}><span style={{ width: `${nextGoal.pot.target ? Math.max(0, Math.min(100, (nextGoal.bal / nextGoal.pot.target) * 100)) : 0}%`, background: nextGoal.pot.color }} /></div>
+            <small className="muted">
+              {nextGoal.pot.target ? `${Math.max(0, Math.round((nextGoal.bal / nextGoal.pot.target) * 100))} % de ${eur(nextGoal.pot.target)} · ` : ''}avant {monthLabel(nextGoal.pot.target_date.slice(0, 7))}
+            </small>
+          </Link>
+        ) : <div className="dcard" style={{ display: 'none' }} />}
+
+        <Link href="/patrimoine" className="dcard">
+          <h2>Patrimoine</h2>
+          {wealth ? (
+            <>
+              <div className="big">{eur(wTotal)}</div>
+              <div className="vline">
+                {wDiff === null ? <span className="muted">Pas encore de relevé il y a un mois</span> : (
+                  <>
+                    <span className={wDiff < 0 ? 'neg' : 'pos'}>{wDiff >= 0 ? '+' : ''}{eur(wDiff)}</span>
+                    <VarTag diff={wDiff} base={wBefore} />
+                    <span className="muted">M-1</span>
+                  </>
+                )}
+              </div>
+            </>
+          ) : <p className="muted" style={{ margin: 0 }}>Patrimoine indisponible : base à mettre à jour (supabase/008_update.sql).</p>}
+        </Link>
+      </div>
+
+      <h2 style={{ marginTop: 34 }}>Analyse des dépenses</h2>
       <div className="bar">
         <Seg value={scope} onChange={setScope} options={SCOPES} />
         <PeriodPicker value={period} onChange={setPeriod} />
       </div>
-      <p className="hint">{HINTS[scope]}</p>
+      <p className="hint">{scope === 'consolide' ? <><Term k="consolide">Consolidé</Term> : perso + commun, virements vers le commun exclus.</> : HINTS[scope]}</p>
 
       {state.error && <p className="err">{state.error}</p>}
-      {!state.loading && !state.error && accounts.length === 0 && (
-        <div className="warn">Aucun compte. <Link href="/reglages">Crée un compte</Link>, puis <Link href="/transactions">importe un CSV</Link>.</div>
-      )}
-
       <div className="strip">
         <div><span>Revenus</span><b>{eur(kpi.income)}</b></div>
         <div><span>Dépenses</span><b>{eur(kpi.expense)}</b></div>
-        <div><span>Solde</span><b className={kpi.net < 0 ? 'neg' : 'pos'}>{eur(kpi.net)}</b></div>
+        <div><span><Term k="solde">Solde</Term></span><b className={kpi.net < 0 ? 'neg' : 'pos'}>{eur(kpi.net)}</b></div>
       </div>
       {todo > 0 && (
         <div className="warn">{todo} opération{todo > 1 ? 's' : ''} à catégoriser. <Link href="/transactions?todo=1">Catégoriser</Link></div>
@@ -116,7 +229,8 @@ export default function Dashboard() {
         {state.loading ? <p className="muted">Chargement…</p> : (
           <>
             {tab === 'repartition' && <CategoryPie data={agg(rows, 'expense').filter((d) => d.value > 0)} />}
-            {tab === 'flux' && <FlowSankey data={sankey(rows, alloc)} />}
+            {tab === 'flux' && <p className="hint" style={{ marginTop: 0 }}><Term k="flux">Flux</Term> : revenus → groupes de catégories → catégories. Les groupes se règlent dans Réglages.</p>}
+            {tab === 'flux' && <FlowSankey data={sankey(rows, alloc, groupOf)} />}
             {tab === 'flux' && kpi.net < 0 && <p className="hint">Le déficit ({eur(kpi.net)}) est ajouté aux revenus pour équilibrer les flux.</p>}
             {tab === 'flux' && scope === 'perso' && pd.pots.length > 0 && !alloc && (
               <p className="hint">Pour voir l’excédent réparti par pots : coche « Exclure les dépenses payées par un pot » et clôture les mois concernés.</p>
@@ -127,11 +241,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="shortcuts">
-        <Link href="/transactions" className="tile"><b>Opérations</b><span>Filtrer, corriger et ajouter des lignes</span></Link>
-        <Link href="/pots" className="tile"><b>Pots</b><span>Épargne par objectif</span></Link>
-        <Link href="/patrimoine" className="tile"><b>Patrimoine</b><span>Actifs, évolution, simulateur</span></Link>
-      </div>
       <p className="settings-link"><Link href="/reglages" className="btn ghost sm">Réglages</Link></p>
     </>
   );

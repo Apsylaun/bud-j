@@ -2,21 +2,83 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getSupabase } from '../../lib/supabase.js';
 import { loadAccounts, loadRules, loadBalances, reapplyRules, loadCategories, updateRow } from '../../lib/data.js';
-import { categoryNames, SWATCHES, KIND_LABEL, PROTECTED_KINDS } from '../../lib/categories.js';
-import { pushUndo, onDataChange } from '../../lib/undo.js';
+import { categoryNames, categoryList, groupList, SWATCHES, KIND_LABEL, PROTECTED_KINDS } from '../../lib/categories.js';
+import { ENVELOPES, BANKS, kindForEnvelope } from '../../lib/accounts.js';
+import { KINDS } from '../../lib/wealth.js';
+import { pushUndo, snapshotOf, onDataChange } from '../../lib/undo.js';
 import { friendly } from '../../lib/errors.js';
 import { Tag } from '../../components/Tag.js';
+import Term from '../../components/Term.js';
 import Colors from '../../components/Colors.js';
 import Modal from '../../components/Modal.js';
 import { eur, dateFr } from '../../lib/format.js';
 
-const BANKS = ['Crédit Agricole', 'Fortuneo', 'Crédit Mutuel', 'Bourse Direct', 'Autre'];
 const check = ({ error }) => { if (error) throw error; };
 
-// Fenêtre « Modifier » d'une catégorie : nom, couleur et nature réunis.
+// Compte : nom, banque, type d'enveloppe (qui détermine le type de compte), compte commun.
+function AccountModal({ account, banks, onClose, onSaved }) {
+  const isNew = !account;
+  const [f, setF] = useState({
+    name: account ? account.name : '', bank: account ? account.bank : '',
+    envelope: account ? account.envelope || 'Compte courant' : 'Compte courant',
+    kind: account ? account.account_kind || 'Courant' : 'Courant', shared: account ? account.shared : false,
+  });
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function save(e) {
+    e.preventDefault(); setBusy(true); setErr('');
+    try {
+      const sb = getSupabase();
+      const row = { name: f.name.trim(), bank: f.bank.trim() || 'À préciser', envelope: f.envelope, account_kind: f.kind };
+      if (isNew) {
+        const { data, error } = await sb.from('accounts').insert({ ...row, shared: f.shared }).select('id').single();
+        if (error) throw error;
+        pushUndo('Ajout de compte', async () => check(await getSupabase().from('accounts').delete().eq('id', data.id)));
+      } else {
+        const before = snapshotOf(account, row);
+        check(await sb.from('accounts').update(row).eq('id', account.id));
+        pushUndo(`Modification de « ${account.name} »`, () => updateRow('accounts', account.id, before));
+      }
+      onSaved();
+    } catch (e2) { setErr(friendly(e2)); setBusy(false); }
+  }
+
+  return (
+    <Modal title={isNew ? 'Nouveau compte' : 'Modifier le compte'} onClose={onClose}>
+      <form className="formgrid flat" onSubmit={save}>
+        <label className="fld"><span>Nom du compte</span><input type="text" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="ex : PEA Bourse Direct" required /></label>
+        <label className="fld"><span><Term k="banque">Banque</Term></span>
+          <input type="text" list="banks" value={f.bank} onChange={(e) => setF({ ...f, bank: e.target.value })} placeholder="ex : Crédit Agricole" />
+          <datalist id="banks">{banks.map((b) => <option key={b} value={b} />)}</datalist>
+        </label>
+        <label className="fld"><span>Type d’<Term k="enveloppe">enveloppe</Term></span>
+          <select value={f.envelope} onChange={(e) => setF({ ...f, envelope: e.target.value, kind: kindForEnvelope(e.target.value) })}>
+            {ENVELOPES.map((x) => <option key={x}>{x}</option>)}
+          </select>
+        </label>
+        <label className="fld"><span><Term k="typecompte">Type de compte</Term></span>
+          <select value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })}>
+            {KINDS.map((k) => <option key={k}>{k}</option>)}
+          </select>
+        </label>
+        {isNew && <label className="check"><input type="checkbox" checked={f.shared} onChange={(e) => setF({ ...f, shared: e.target.checked })} /> Compte commun (visible par les deux utilisateurs)</label>}
+        <p className="hint" style={{ margin: 0 }}>Les actifs liés à ce compte héritent automatiquement de sa banque, de son enveloppe et de son type.</p>
+        {err && <p className="err">{err}</p>}
+        <div className="form">
+          <button className="btn" disabled={busy}>{isNew ? 'Créer' : 'Enregistrer'}</button>
+          <button type="button" className="btn ghost" onClick={onClose}>Annuler</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// Catégorie : nom, couleur, nature, groupe.
 function CategoryModal({ cat, onClose, onSaved }) {
   const locked = PROTECTED_KINDS.includes(cat.kind);
-  const [f, setF] = useState({ name: cat.name, color: cat.color, kind: cat.kind });
+  const groups = groupList();
+  const [f, setF] = useState({ name: cat.name, color: cat.color, kind: cat.kind, group: cat.group_id || '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -31,11 +93,12 @@ function CategoryModal({ cat, onClose, onSaved }) {
       const patch = {};
       if (f.color !== cat.color) patch.color = f.color;
       if (!locked && f.kind !== cat.kind) patch.kind = f.kind;
+      if ((f.group || null) !== (cat.group_id || null)) patch.group_id = f.group || null;
       if (Object.keys(patch).length) check(await sb.from('categories').update(patch).eq('id', cat.id));
       pushUndo(`Modification de « ${cat.name} »`, async () => {
         const c = getSupabase();
         if (renamed) check(await c.rpc('rename_category', { p_old: name, p_new: cat.name }));
-        if (Object.keys(patch).length) check(await c.from('categories').update({ color: cat.color, kind: cat.kind }).eq('id', cat.id));
+        if (Object.keys(patch).length) check(await c.from('categories').update({ color: cat.color, kind: cat.kind, group_id: cat.group_id || null }).eq('id', cat.id));
       });
       onSaved();
     } catch (e2) { setErr(friendly(e2)); setBusy(false); }
@@ -49,14 +112,88 @@ function CategoryModal({ cat, onClose, onSaved }) {
           <Tag name={f.name || 'Aperçu'} color={f.color} />
         </div>
         {locked
-          ? <span className="hint" style={{ margin: 0 }}>{KIND_LABEL[cat.kind]} : le nom et la nature sont fixes, seule la couleur se modifie.</span>
+          ? <span className="hint" style={{ margin: 0 }}>{KIND_LABEL[cat.kind]} : le nom et la nature sont fixes.</span>
           : (
             <select value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} aria-label="Nature">
               <option value="expense">Dépense</option>
               <option value="income">Revenu</option>
             </select>
           )}
+        <label className="fld"><span><Term k="groupe">Groupe</Term> (schéma de flux)</span>
+          <select value={f.group} onChange={(e) => setF({ ...f, group: e.target.value })}>
+            <option value="">Aucun groupe</option>
+            {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+        </label>
         <Colors value={f.color} onPick={(color) => setF({ ...f, color })} />
+        {err && <p className="err">{err}</p>}
+        <div className="form">
+          <button className="btn" disabled={busy}>Enregistrer</button>
+          <button type="button" className="btn ghost" onClick={onClose}>Annuler</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// Groupe de catégories : nom, couleur et catégories membres.
+function GroupModal({ group, onClose, onSaved }) {
+  const isNew = !group;
+  const cats = categoryList();
+  const [f, setF] = useState({ name: group ? group.name : '', color: group ? group.color : SWATCHES[4], members: cats.filter((c) => group && c.group_id === group.id).map((c) => c.name) });
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const toggle = (n) => setF((x) => ({ ...x, members: x.members.includes(n) ? x.members.filter((m) => m !== n) : [...x.members, n] }));
+
+  async function save(e) {
+    e.preventDefault(); setBusy(true); setErr('');
+    try {
+      const sb = getSupabase();
+      const name = f.name.trim();
+      if (!name) throw new Error('Le nom ne peut pas être vide.');
+      const prevMembers = cats.filter((c) => group && c.group_id === group.id).map((c) => c.name);
+      let gid;
+      if (isNew) {
+        const sort = groupList().reduce((m, g) => Math.max(m, g.sort || 0), 0) + 1;
+        const { data, error } = await sb.from('category_groups').insert({ name, color: f.color, sort }).select('id').single();
+        if (error) throw error;
+        gid = data.id;
+      } else {
+        gid = group.id;
+        check(await sb.from('category_groups').update({ name, color: f.color }).eq('id', gid));
+      }
+      const removed = prevMembers.filter((n) => !f.members.includes(n));
+      if (removed.length) check(await sb.from('categories').update({ group_id: null }).in('name', removed));
+      if (f.members.length) check(await sb.from('categories').update({ group_id: gid }).in('name', f.members));
+      pushUndo(isNew ? `Création du groupe « ${name} »` : `Modification du groupe « ${group.name} »`, async () => {
+        const c = getSupabase();
+        if (isNew) { check(await c.from('category_groups').delete().eq('id', gid)); return; }
+        check(await c.from('category_groups').update({ name: group.name, color: group.color }).eq('id', gid));
+        if (f.members.length) check(await c.from('categories').update({ group_id: null }).in('name', f.members));
+        if (prevMembers.length) check(await c.from('categories').update({ group_id: gid }).in('name', prevMembers));
+      });
+      onSaved();
+    } catch (e2) { setErr(friendly(e2)); setBusy(false); }
+  }
+
+  return (
+    <Modal title={isNew ? 'Nouveau groupe' : 'Modifier le groupe'} onClose={onClose}>
+      <form className="formgrid flat" onSubmit={save}>
+        <div className="form">
+          <input type="text" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="ex : Vie quotidienne" required aria-label="Nom du groupe" />
+          <span className="tag" style={{ '--c': f.color }}>{f.name || 'Aperçu'}</span>
+        </div>
+        <Colors value={f.color} onPick={(color) => setF({ ...f, color })} />
+        <span className="hint" style={{ margin: 0 }}>Catégories du groupe (une catégorie n’appartient qu’à un groupe) :</span>
+        <div className="chk">
+          {cats.map((c) => (
+            <label key={c.id} className="check">
+              <input type="checkbox" checked={f.members.includes(c.name)} onChange={() => toggle(c.name)} />
+              <Tag name={c.name} color={c.color} />
+              {c.group && !f.members.includes(c.name) && (!group || c.group_id !== group.id) ? <span className="muted">dans « {c.group} »</span> : null}
+            </label>
+          ))}
+        </div>
         {err && <p className="err">{err}</p>}
         <div className="form">
           <button className="btn" disabled={busy}>Enregistrer</button>
@@ -72,10 +209,10 @@ export default function Reglages() {
   const [balances, setBalances] = useState({});
   const [rules, setRules] = useState([]);
   const [cats, setCats] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [catsOk, setCatsOk] = useState(true);
-  const [editCat, setEditCat] = useState(null);
+  const [modal, setModal] = useState(null); // { type, item }
   const [msg, setMsg] = useState('');
-  const [acc, setAcc] = useState({ name: '', bank: BANKS[0], shared: false });
   const [cat, setCat] = useState({ name: '', kind: 'expense', color: SWATCHES[0] });
   const [rule, setRule] = useState({ pattern: '', category: 'Courses' });
   const sb = getSupabase();
@@ -84,7 +221,7 @@ export default function Reglages() {
     try {
       const [a, r, b, c] = await Promise.all([loadAccounts(), loadRules(), loadBalances(), loadCategories()]);
       setAccounts(a); setRules(r); setBalances(b); setCatsOk(c !== null);
-      setCats(c || []);
+      setCats(c || []); setGroups(groupList());
     } catch (e) { setMsg(friendly(e)); }
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
@@ -94,21 +231,12 @@ export default function Reglages() {
     setMsg('');
     try { await fn(); await refresh(); } catch (e) { setMsg(friendly(e)); }
   };
+  const saved = () => { setModal(null); refresh(); };
+  const banks = [...new Set([...accounts.map((a) => a.bank).filter((b) => b && b !== 'À préciser'), ...BANKS])];
 
-  const addAccount = (e) => {
-    e.preventDefault();
-    attempt(async () => {
-      const { data, error } = await sb.from('accounts').insert({ name: acc.name.trim(), bank: acc.bank, shared: acc.shared }).select('id').single();
-      if (error) throw error;
-      pushUndo('Ajout de compte', () => updateAfterDelete('accounts', data.id));
-      setAcc({ name: '', bank: BANKS[0], shared: false });
-    });
-  };
-  const updateAfterDelete = async (table, id) => check(await getSupabase().from(table).delete().eq('id', id));
   const delAccount = (a) => {
     if (window.confirm(`Supprimer « ${a.name} » et toutes ses opérations ? Cette action est définitive.`)) attempt(async () => check(await sb.from('accounts').delete().eq('id', a.id)));
   };
-
   const addCat = (e) => {
     e.preventDefault();
     attempt(async () => {
@@ -123,6 +251,9 @@ export default function Reglages() {
     if (window.confirm(`Supprimer « ${c.name} » ? Les opérations concernées repasseront en « à catégoriser ». Cette action est définitive.`)) {
       attempt(async () => check(await sb.rpc('delete_category', { p_name: c.name })));
     }
+  };
+  const delGroup = (g) => {
+    if (window.confirm(`Supprimer le groupe « ${g.name} » ? Ses catégories ne sont pas supprimées.`)) attempt(async () => check(await sb.from('category_groups').delete().eq('id', g.id)));
   };
 
   const syncRules = async () => {
@@ -161,34 +292,34 @@ export default function Reglages() {
       {accounts.map((a) => (
         <div className="item" key={a.id}>
           <div>
-            {a.name}<span className="badge">{a.bank}</span>{a.shared && <span className="badge">Commun</span>}
+            {a.name}
+            <span className="badge">{a.bank}</span>
+            {a.envelope && <span className="badge">{a.envelope}</span>}
+            {a.account_kind && <span className="badge">{a.account_kind}</span>}
+            {a.shared && <span className="badge">Commun</span>}
             {balances[a.id] && <div className="muted">Dernier solde connu : {eur(balances[a.id].balance, 2)} au {dateFr(balances[a.id].date)}</div>}
           </div>
-          <button className="btn danger sm" onClick={() => delAccount(a)}>Suppr.</button>
+          <span className="form">
+            <button className="btn ghost sm" onClick={() => setModal({ type: 'account', item: a })}>Modifier</button>
+            <button className="btn danger sm" onClick={() => delAccount(a)}>Suppr.</button>
+          </span>
         </div>
       ))}
-      <form className="form" onSubmit={addAccount} style={{ marginTop: 12 }}>
-        <input type="text" placeholder="Nom du compte" value={acc.name} onChange={(e) => setAcc({ ...acc, name: e.target.value })} required />
-        <select value={acc.bank} onChange={(e) => setAcc({ ...acc, bank: e.target.value })}>
-          {BANKS.map((b) => <option key={b}>{b}</option>)}
-        </select>
-        <label className="check"><input type="checkbox" checked={acc.shared} onChange={(e) => setAcc({ ...acc, shared: e.target.checked })} /> Compte commun</label>
-        <button className="btn">Ajouter</button>
-      </form>
-      <p className="hint">Un compte commun est visible et modifiable par les deux utilisateurs. Un compte personnel n’est visible que par toi.</p>
+      <p style={{ marginTop: 12 }}><button className="btn" onClick={() => setModal({ type: 'account', item: null })}>+ Ajouter un compte</button></p>
+      <p className="hint">Un compte commun est visible et modifiable par les deux utilisateurs. Les actifs du patrimoine se rattachent à un compte et héritent de sa banque, de son enveloppe et de son type.</p>
 
       <details className="toggle">
         <summary>Catégories</summary>
         <div className="body">
-          {!catsOk && <div className="warn">Catégories modifiables indisponibles : exécute <code>supabase/007_update.sql</code> dans Supabase.</div>}
+          {!catsOk && <div className="warn">Catégories modifiables indisponibles : exécute <code>supabase/008_update.sql</code> dans Supabase.</div>}
           {catsOk && (
             <>
               <p className="hint">Les catégories sont communes aux deux utilisateurs. Renommer ou supprimer une catégorie met à jour toutes les opérations.</p>
               {cats.map((c) => (
                 <div className="item" key={c.id}>
-                  <span><Tag name={c.name} color={c.color} /><span className="badge">{KIND_LABEL[c.kind]}</span></span>
+                  <span><Tag name={c.name} color={c.color} /><span className="badge">{KIND_LABEL[c.kind]}</span>{c.group && <span className="badge">{c.group}</span>}</span>
                   <span className="form">
-                    <button className="btn ghost sm" onClick={() => setEditCat(c)}>Modifier</button>
+                    <button className="btn ghost sm" onClick={() => setModal({ type: 'cat', item: c })}>Modifier</button>
                     {!PROTECTED_KINDS.includes(c.kind) && <button className="btn danger sm" onClick={() => delCat(c)}>Suppr.</button>}
                   </span>
                 </div>
@@ -210,8 +341,33 @@ export default function Reglages() {
         </div>
       </details>
 
+      <details className="toggle">
+        <summary><Term k="groupe">Groupes de catégories</Term></summary>
+        <div className="body">
+          {!catsOk && <div className="warn">Groupes indisponibles : exécute <code>supabase/008_update.sql</code> dans Supabase.</div>}
+          {catsOk && (
+            <>
+              <p className="hint">Les groupes regroupent des catégories dans le schéma de flux du tableau de bord (revenus → groupes → catégories).</p>
+              {groups.map((g) => (
+                <div className="item" key={g.id}>
+                  <span>
+                    <span className="tag" style={{ '--c': g.color }}>{g.name}</span>{' '}
+                    <span className="muted">{cats.filter((c) => c.group_id === g.id).map((c) => c.name).join(', ') || 'aucune catégorie'}</span>
+                  </span>
+                  <span className="form">
+                    <button className="btn ghost sm" onClick={() => setModal({ type: 'group', item: g })}>Modifier</button>
+                    <button className="btn danger sm" onClick={() => delGroup(g)}>Suppr.</button>
+                  </span>
+                </div>
+              ))}
+              <p style={{ marginTop: 12 }}><button className="btn" onClick={() => setModal({ type: 'group', item: null })}>+ Ajouter un groupe</button></p>
+            </>
+          )}
+        </div>
+      </details>
+
       <h2>Règles de catégorisation</h2>
-      <p className="hint">Si le libellé contient le mot-clé, la catégorie est appliquée à l’import. Tes choix manuels ne sont jamais écrasés. Des règles par défaut existent (courses, transport, placement, retraits…). On peut aussi créer une règle depuis la fenêtre « Modifier » d’une opération.</p>
+      <p className="hint">Si le libellé contient le mot-clé, la catégorie est appliquée à l’import. Tes choix manuels ne sont jamais écrasés. Des règles par défaut existent (courses, transport, <Term k="placement">placement</Term>, retraits…). On peut aussi créer une règle depuis la fenêtre « Modifier » d’une opération.</p>
       {rules.map((r) => (
         <div className="item" key={r.id}>
           <span>« {r.pattern} » <Tag name={r.category} /></span>
@@ -229,7 +385,9 @@ export default function Reglages() {
       <h2>Session</h2>
       <button className="btn ghost" onClick={() => sb.auth.signOut()}>Se déconnecter</button>
 
-      {editCat && <CategoryModal cat={editCat} onClose={() => setEditCat(null)} onSaved={() => { setEditCat(null); refresh(); }} />}
+      {modal && modal.type === 'account' && <AccountModal account={modal.item} banks={banks} onClose={() => setModal(null)} onSaved={saved} />}
+      {modal && modal.type === 'cat' && <CategoryModal cat={modal.item} onClose={() => setModal(null)} onSaved={saved} />}
+      {modal && modal.type === 'group' && <GroupModal group={modal.item} onClose={() => setModal(null)} onSaved={saved} />}
     </>
   );
 }
