@@ -11,7 +11,9 @@ import { Tag } from '../../components/Tag.js';
 import Term from '../../components/Term.js';
 import Colors from '../../components/Colors.js';
 import Modal from '../../components/Modal.js';
-import { eur, dateFr } from '../../lib/format.js';
+import PotModal from '../../components/PotModal.js';
+import { loadPots, loadEntries, buildTree, ownBalances } from '../../lib/pots.js';
+import { eur, dateFr, monthLabel } from '../../lib/format.js';
 
 const check = ({ error }) => { if (error) throw error; };
 
@@ -211,6 +213,7 @@ export default function Reglages() {
   const [cats, setCats] = useState([]);
   const [groups, setGroups] = useState([]);
   const [catsOk, setCatsOk] = useState(true);
+  const [potData, setPotData] = useState(null); // null = pots non installés
   const [modal, setModal] = useState(null); // { type, item }
   const [msg, setMsg] = useState('');
   const [cat, setCat] = useState({ name: '', kind: 'expense', color: SWATCHES[0] });
@@ -219,8 +222,8 @@ export default function Reglages() {
 
   const refresh = useCallback(async () => {
     try {
-      const [a, r, b, c] = await Promise.all([loadAccounts(), loadRules(), loadBalances(), loadCategories()]);
-      setAccounts(a); setRules(r); setBalances(b); setCatsOk(c !== null);
+      const [a, r, b, c, p] = await Promise.all([loadAccounts(), loadRules(), loadBalances(), loadCategories(), Promise.all([loadPots(), loadEntries()]).catch(() => null)]);
+      setAccounts(a); setRules(r); setBalances(b); setCatsOk(c !== null); setPotData(p ? { pots: p[0], entries: p[1] } : null);
       setCats(c || []); setGroups(groupList());
     } catch (e) { setMsg(friendly(e)); }
   }, []);
@@ -256,6 +259,26 @@ export default function Reglages() {
     if (window.confirm(`Supprimer le groupe « ${g.name} » ? Ses catégories ne sont pas supprimées.`)) attempt(async () => check(await sb.from('category_groups').delete().eq('id', g.id)));
   };
 
+  const potTree = potData ? buildTree(potData.pots, ownBalances(potData.entries)) : [];
+  const delPot = (p) => {
+    const warn = (potData && potData.entries.some((e) => e.pot_id === p.id)) || (p.kids && p.kids.length) ? ' Son historique (et celui de ses sous-objectifs) sera perdu.' : '';
+    if (window.confirm(`Supprimer « ${p.name} » ?${warn} Cette action est définitive.`)) attempt(async () => check(await sb.from('pots').delete().eq('id', p.id)));
+  };
+  const potRow = (p, kid) => (
+    <div className={'item' + (kid ? ' kid' : '')} key={p.id}>
+      <span>
+        {p.emoji ? `${p.emoji} ` : <i className="dot" style={{ background: p.color }} />} {p.name}
+        {p.role === 'rest' && <span className="badge"><Term k="reste">absorbe l’écart</Term></span>}
+        {p.role === 'deficit' && <span className="badge"><Term k="imprevu">absorbe les déficits</Term></span>}
+        {p.target ? <span className="badge">objectif {eur(p.target)}{p.target_date ? ` · avant ${monthLabel(p.target_date.slice(0, 7))}` : ''}</span> : null}
+      </span>
+      <span className="form">
+        <button className="btn ghost sm" onClick={() => setModal({ type: 'pot', item: p })}>Modifier</button>
+        {!p.role && <button className="btn danger sm" onClick={() => delPot(p)}>Suppr.</button>}
+      </span>
+    </div>
+  );
+
   const syncRules = async () => {
     const n = await reapplyRules(await loadRules());
     setMsg(`${n} opération(s) recatégorisée(s).`);
@@ -288,7 +311,9 @@ export default function Reglages() {
       <h1>Réglages</h1>
       {msg && <div className="warn">{msg}</div>}
 
-      <h2>Comptes</h2>
+      <details className="toggle sec-pat">
+        <summary>Comptes</summary>
+        <div className="body">
       {accounts.map((a) => (
         <div className="item" key={a.id}>
           <div>
@@ -307,8 +332,10 @@ export default function Reglages() {
       ))}
       <p style={{ marginTop: 12 }}><button className="btn" onClick={() => setModal({ type: 'account', item: null })}>+ Ajouter un compte</button></p>
       <p className="hint">Un compte commun est visible et modifiable par les deux utilisateurs. Les actifs du patrimoine se rattachent à un compte et héritent de sa banque, de son enveloppe et de son type.</p>
+        </div>
+      </details>
 
-      <details className="toggle">
+      <details className="toggle sec-ops">
         <summary>Catégories</summary>
         <div className="body">
           {!catsOk && <div className="warn">Catégories modifiables indisponibles : exécute <code>supabase/008_update.sql</code> dans Supabase.</div>}
@@ -341,7 +368,7 @@ export default function Reglages() {
         </div>
       </details>
 
-      <details className="toggle">
+      <details className="toggle sec-ops">
         <summary><Term k="groupe">Groupes de catégories</Term></summary>
         <div className="body">
           {!catsOk && <div className="warn">Groupes indisponibles : exécute <code>supabase/008_update.sql</code> dans Supabase.</div>}
@@ -366,7 +393,9 @@ export default function Reglages() {
         </div>
       </details>
 
-      <h2>Règles de catégorisation</h2>
+      <details className="toggle sec-ops">
+        <summary>Règles de catégorisation</summary>
+        <div className="body">
       <p className="hint">Si le libellé contient le mot-clé, la catégorie est appliquée à l’import. Tes choix manuels ne sont jamais écrasés. Des règles par défaut existent (courses, transport, <Term k="placement">placement</Term>, retraits…). On peut aussi créer une règle depuis la fenêtre « Modifier » d’une opération.</p>
       {rules.map((r) => (
         <div className="item" key={r.id}>
@@ -381,13 +410,43 @@ export default function Reglages() {
         </select>
         <button className="btn">Ajouter</button>
       </form>
+        </div>
+      </details>
 
-      <h2>Session</h2>
-      <button className="btn ghost" onClick={() => sb.auth.signOut()}>Se déconnecter</button>
+      <details className="toggle sec-pots">
+        <summary>Pots</summary>
+        <div className="body">
+          {potData === null ? <div className="warn">Pots indisponibles : exécute <code>supabase/002_pots.sql</code> dans Supabase.</div> : (
+            <>
+              <p className="hint">Un pot reçoit une part de l’excédent mensuel ; un <Term k="sousobjectif">sous-objectif</Term> est un projet daté rattaché à un pot. « Reste » et « Imprévu » sont obligatoires.</p>
+              {potTree.map((m) => (
+                <div key={m.id}>
+                  {potRow(m, false)}
+                  {m.kids.map((k) => potRow(k, true))}
+                </div>
+              ))}
+              <div className="form" style={{ marginTop: 12 }}>
+                <button className="btn" onClick={() => setModal({ type: 'pot', item: null, parent: '' })}>+ Ajouter un pot</button>
+                <button className="btn ghost" disabled={!potTree.length} onClick={() => setModal({ type: 'pot', item: null, parent: potTree[0] ? potTree[0].id : '' })}>+ Sous-objectif</button>
+              </div>
+            </>
+          )}
+        </div>
+      </details>
+
+      <details className="toggle">
+        <summary>Session</summary>
+        <div className="body"><button className="btn ghost" onClick={() => sb.auth.signOut()}>Se déconnecter</button></div>
+      </details>
 
       {modal && modal.type === 'account' && <AccountModal account={modal.item} banks={banks} onClose={() => setModal(null)} onSaved={saved} />}
       {modal && modal.type === 'cat' && <CategoryModal cat={modal.item} onClose={() => setModal(null)} onSaved={saved} />}
       {modal && modal.type === 'group' && <GroupModal group={modal.item} onClose={() => setModal(null)} onSaved={saved} />}
+      {modal && modal.type === 'pot' && potData && (
+        <PotModal pot={modal.item} orig={modal.item ? potData.pots.find((x) => x.id === modal.item.id) : null} parent={modal.parent}
+          mains={potTree} sortBase={potData.pots.length} hasEntries={!!modal.item && potData.entries.some((e) => e.pot_id === modal.item.id)}
+          onClose={() => setModal(null)} onSaved={saved} />
+      )}
     </>
   );
 }

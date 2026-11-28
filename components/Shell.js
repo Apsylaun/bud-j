@@ -12,7 +12,8 @@ const UndoIcon = () => (
 );
 
 // [chemin, libellé du menu latéral, libellé court (barre mobile)]
-const SECTION = { transactions: 'sec-ops', pots: 'sec-pots', patrimoine: 'sec-pat' };
+const SECTION = { transactions: 'sec-ops', pots: 'sec-pots', patrimoine: 'sec-pat', reglages: 'sec-set' };
+const LINK_SEC = { transactions: 'sec-ops', pots: 'sec-pots', patrimoine: 'sec-pat' };
 
 const NAV = [
   ['/', 'Tableau de bord', 'Accueil'], ['/transactions', 'Opérations'],
@@ -111,8 +112,8 @@ export default function Shell({ children }) {
       <nav className="nav">
         <span className="brand">Bud-J</span>
         {NAV.map(([href, label, short]) => (
-          <Link key={href} href={href} className={(href === '/' ? path === '/' : path.startsWith(href)) ? 'on' : ''}>
-            {short ? <><span className="lg">{label}</span><span className="sm">{short}</span></> : label}
+          <Link key={href} href={href} className={((href === '/' ? path === '/' : path.startsWith(href)) ? 'on ' : '') + (LINK_SEC[href.split('/')[1]] || '')}>
+            <span className="navlbl">{short ? <><span className="lg">{label}</span><span className="sm">{short}</span></> : label}</span>
           </Link>
         ))}
         <button className="undo desk" onClick={doUndo} disabled={!undoLabel} title={undoLabel ? `Annuler : ${undoLabel} (Ctrl+Z)` : 'Rien à annuler'}>

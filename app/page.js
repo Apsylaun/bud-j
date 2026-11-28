@@ -20,7 +20,7 @@ const HINTS = {
   consolide: 'Perso + commun. Les virements vers le commun sont exclus pour éviter le double compte.',
 };
 const TABS = [['repartition', 'Répartition'], ['flux', 'Flux'], ['evolution', 'Évolution'], ['tableau', 'Tableau']];
-const STATUS = { 'En cours': '#5B8DB8', 'À faire': '#E08A3C', 'Fait': '#4CAF7D' };
+const STATUS = { 'En cours': '#8DB4EA', 'À faire': '#F4B183', 'Fait': '#7FCBA5' };
 
 // Variation affichée sous forme de tag (▲ / ▼).
 function VarTag({ diff, base }) {
@@ -41,6 +41,8 @@ export default function Dashboard() {
   const [tab, setTab] = useState('repartition');
   const [pd, setPd] = useState({ pots: [], entries: [], months: [] });
   const [excl, setExcl] = useState(false);
+  const [accOpen, setAccOpen] = useState(true);
+  useEffect(() => { try { if (localStorage.getItem('budj.accOpen') === '0') setAccOpen(false); } catch (e) { /* ouvert par défaut */ } }, []);
   const [state, setState] = useState({ loading: true, error: null });
 
   const filterCats = [...categoryList().filter((c) => c.kind === 'expense' || c.kind === 'transfer_commun').map((c) => c.name), UNCATEGORIZED];
@@ -92,9 +94,9 @@ export default function Dashboard() {
     return {
       data: byMonth(allRows),
       series: [
-        { key: 'income', label: 'Revenus', color: '#4CAF7D' },
-        { key: 'expense', label: 'Dépenses', color: '#D4574E' },
-        { key: 'net', label: 'Solde', color: '#7A8FA6', dash: '5 4' },
+        { key: 'income', label: 'Revenus', color: '#6FC59A' },
+        { key: 'expense', label: 'Dépenses', color: '#EE8C85' },
+        { key: 'net', label: 'Solde', color: '#9AB3C9', dash: '5 4' },
       ],
     };
   }, [rows, allRows, cats]);
@@ -132,9 +134,9 @@ export default function Dashboard() {
     <>
       <h1>Tableau de bord{name ? ` ${name}` : ''}</h1>
 
-      <div className="dcard" style={{ marginTop: 0 }}>
-        <h2>Mes comptes · variation M-1</h2>
-        {accounts.length === 0 && !state.loading && <p className="muted" style={{ margin: 0 }}>Aucun compte. <Link href="/reglages">Crée un compte</Link>, puis importe tes opérations depuis <Link href="/transactions">Opérations</Link>.</p>}
+      <details className="tcard" open={accOpen} onToggle={(e) => { setAccOpen(e.currentTarget.open); try { localStorage.setItem('budj.accOpen', e.currentTarget.open ? '1' : '0'); } catch (err) { /* stockage indisponible */ } }}>
+        <summary>Mes comptes · variation M-1</summary>
+        {accounts.length === 0 && !state.loading && <p className="muted" style={{ margin: '0 0 8px' }}>Aucun compte. <Link href="/reglages">Crée un compte</Link>, puis importe tes opérations depuis <Link href="/transactions">Opérations</Link>.</p>}
         {accounts.map((a) => {
           const v = wealth ? accountValue(a, wealth.assets, g, wealth.hist, today) : null;
           const b = wealth ? accountValue(a, wealth.assets, g, wealth.hist, ago) : null;
@@ -149,10 +151,10 @@ export default function Dashboard() {
           );
         })}
         {accounts.length > 0 && <p className="hint" style={{ margin: '8px 0 0' }}>Soldes : actifs liés au compte ou dernier solde importé. <Term k="variation">Variation M-1</Term> = écart avec il y a un mois.</p>}
-      </div>
+      </details>
 
       <div className="dashgrid">
-        <Link href="/transactions" className="dcard">
+        <Link href="/transactions" className="dcard sec-ops">
           <h2>Opérations</h2>
           {monthRows.map((r) => (
             <div className="mrow" key={r.m}>
@@ -162,19 +164,34 @@ export default function Dashboard() {
           ))}
         </Link>
 
-        {nextGoal ? (
-          <Link href="/pots" className="dcard">
-            <h2>Prochain objectif</h2>
-            <div style={{ fontWeight: 600 }}>{nextGoal.pot.emoji ? `${nextGoal.pot.emoji} ` : ''}{nextGoal.pot.name}{nextGoal.parent ? <span className="muted" style={{ fontWeight: 400 }}> · {nextGoal.parent.name}</span> : null}</div>
-            <div className="big">{eur(nextGoal.bal)}</div>
-            <div className="track2" style={{ marginTop: 6 }}><span style={{ width: `${nextGoal.pot.target ? Math.max(0, Math.min(100, (nextGoal.bal / nextGoal.pot.target) * 100)) : 0}%`, background: nextGoal.pot.color }} /></div>
-            <small className="muted">
-              {nextGoal.pot.target ? `${Math.max(0, Math.round((nextGoal.bal / nextGoal.pot.target) * 100))} % de ${eur(nextGoal.pot.target)} · ` : ''}avant {monthLabel(nextGoal.pot.target_date.slice(0, 7))}
-            </small>
-          </Link>
-        ) : <div className="dcard" style={{ display: 'none' }} />}
+        <Link href="/pots" className="dcard sec-pots">
+          <h2>Mes pots</h2>
+          {potTree.length === 0 ? <p className="muted" style={{ margin: 0 }}>Aucun pot pour le moment.</p> : (
+            <>
+              <div className="big">{eur(potTree.reduce((sum, m) => sum + m.total, 0))}</div>
+              {potTree.slice(0, 6).map((m) => (
+                <div className="mrow" key={m.id}>
+                  <span><i className="dot" style={{ background: m.color }} /> {m.name}</span>
+                  <b className="stat" style={{ fontWeight: 500 }}>{eur(m.total)}</b>
+                </div>
+              ))}
+              {potTree.length > 6 && <small className="muted">+ {potTree.length - 6} autre{potTree.length - 6 > 1 ? 's' : ''}</small>}
+            </>
+          )}
+          {nextGoal && (
+            <>
+              <hr />
+              <div className="muted" style={{ fontSize: 12 }}>Prochain objectif</div>
+              <div style={{ fontWeight: 600 }}>{nextGoal.pot.emoji ? `${nextGoal.pot.emoji} ` : ''}{nextGoal.pot.name}{nextGoal.parent ? <span className="muted" style={{ fontWeight: 400 }}> · {nextGoal.parent.name}</span> : null}</div>
+              <div className="track2" style={{ marginTop: 6 }}><span style={{ width: `${nextGoal.pot.target ? Math.max(0, Math.min(100, (nextGoal.bal / nextGoal.pot.target) * 100)) : 0}%`, background: nextGoal.pot.color }} /></div>
+              <small className="muted">
+                {eur(nextGoal.bal)}{nextGoal.pot.target ? ` sur ${eur(nextGoal.pot.target)}` : ''} · avant {monthLabel(nextGoal.pot.target_date.slice(0, 7))}
+              </small>
+            </>
+          )}
+        </Link>
 
-        <Link href="/patrimoine" className="dcard">
+        <Link href="/patrimoine" className="dcard sec-pat">
           <h2>Patrimoine</h2>
           {wealth ? (
             <>
@@ -193,6 +210,7 @@ export default function Dashboard() {
         </Link>
       </div>
 
+      <div className="sec-ops">
       <h2 style={{ marginTop: 34 }}>Analyse des dépenses</h2>
       <div className="bar">
         <Seg value={scope} onChange={setScope} options={SCOPES} />
@@ -239,6 +257,8 @@ export default function Dashboard() {
             {tab === 'tableau' && <PivotTable data={pivot(rows)} />}
           </>
         )}
+      </div>
+
       </div>
 
       <p className="settings-link"><Link href="/reglages" className="btn ghost sm">Réglages</Link></p>

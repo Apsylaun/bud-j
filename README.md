@@ -143,3 +143,15 @@ Il corrige l’erreur « Could not find the 'account_kind' column… » et recha
 - **Opérations** : colonnes réordonnables par glisser-déposer des en-têtes (ordre mémorisé sur l’appareil).
 - **Réglages** : un compte a une banque, un type d’enveloppe et un type de compte (déduit de l’enveloppe). Groupes de catégories (Revenus, Autre, Loyer, Vie quotidienne, Pots) qui alimentent le schéma de flux.
 - **Patrimoine** : un actif se rattache à un compte et hérite de sa banque, de son enveloppe et de son type. Mise en page : total + courbe, répartition en anneau, tableau filtrable et groupé. Pour les actifs créés avant cette version, un bouton crée les comptes à partir des anciennes enveloppes.
+
+---
+
+# Bud-J v7
+
+**Mise à jour** : extraire le zip complet à la racine du dépôt et `git push`. Aucune migration SQL cette fois.
+
+- **Design** : Roboto pour les titres, sous-titres et nombres ; palette pastel ; titres et sous-titres colorés par section ; section active soulignée d’un trait fin dans le menu. Titre « Réglages » en gris.
+- **Tableau de bord** : « Mes comptes » repliable (état mémorisé), blocs Opérations (turquoise), Mes pots (rose, avec prochain objectif) et Patrimoine (violet).
+- **Opérations** : cases à cocher pour modifier une propriété (catégorie, compte, date, commentaire) ou supprimer plusieurs lignes d’un coup, annulable. Un CSV glissé sur la page ouvre l’import.
+- **Pots** : « + Ajouter un pot » ouvre un pop-in. L’onglet Gérer disparaît : renommer, objectif, horizon, couleur, emoji et suppression sont dans Réglages › Pots.
+- **Réglages** : toutes les parties sont repliables, colorées selon leur section (Comptes violet, Catégories / Groupes / Règles turquoise, Pots rose).

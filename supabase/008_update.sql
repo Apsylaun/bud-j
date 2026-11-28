@@ -163,8 +163,8 @@ declare gid uuid;
 begin
   if exists (select 1 from public.categories) and not exists (select 1 from public.category_groups) then
     insert into public.category_groups (name, color, sort) values
-      ('Revenus', '#4CAF7D', 0), ('Autre', '#9AA0A6', 1), ('Loyer', '#E08A3C', 2),
-      ('Vie quotidienne', '#5B8DB8', 3), ('Pots', '#D9759B', 4);
+      ('Revenus', '#7FCBA5', 0), ('Autre', '#B7BEC7', 1), ('Loyer', '#F4B183', 2),
+      ('Vie quotidienne', '#8DB4EA', 3), ('Pots', '#EDA3C8', 4);
     update public.categories set group_id = (select id from public.category_groups where name = 'Revenus') where name in ('Salaire', 'Autre revenu');
     update public.categories set group_id = (select id from public.category_groups where name = 'Autre') where name in ('Transport', 'Médical', 'Retrait');
     update public.categories set group_id = (select id from public.category_groups where name = 'Loyer') where name = 'Loyer';

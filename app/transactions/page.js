@@ -229,6 +229,11 @@ export default function Operations() {
   const [noteFor, setNoteFor] = useState(null);
   const [modal, setModal] = useState(null); // 'new' | transaction | null
   const [importing, setImporting] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [veil, setVeil] = useState(false);
+  const [sel, setSel] = useState(() => new Set());
+  const [batch, setBatch] = useState({ prop: 'category', value: '' });
+  const [busyBatch, setBusyBatch] = useState(false);
   const [state, setState] = useState({ loading: true, error: null });
   const [order, setOrder] = useColumnOrder();
   const wide = useWide();
@@ -241,6 +246,27 @@ export default function Operations() {
     else if (/^\d{4}$/.test(sp.get('y') || '') && /^\d{2}$/.test(sp.get('m') || '')) setFlt({ ...EMPTY, years: [sp.get('y')], months: [sp.get('m')] });
   }, []);
   useEffect(() => onDataChange(() => setTick((n) => n + 1)), []);
+
+  // Glisser un fichier sur la page ouvre l'import.
+  useEffect(() => {
+    const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+    let depth = 0;
+    const enter = (e) => { if (hasFiles(e)) { depth += 1; setVeil(true); } };
+    const leave = (e) => { if (hasFiles(e)) { depth = Math.max(0, depth - 1); if (!depth) setVeil(false); } };
+    const over = (e) => { if (hasFiles(e)) e.preventDefault(); };
+    const drop = (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); depth = 0; setVeil(false);
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) { setImportFile(f); setImporting(true); }
+    };
+    window.addEventListener('dragenter', enter); window.addEventListener('dragleave', leave);
+    window.addEventListener('dragover', over); window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragenter', enter); window.removeEventListener('dragleave', leave);
+      window.removeEventListener('dragover', over); window.removeEventListener('drop', drop);
+    };
+  }, []);
 
   useEffect(() => {
     let off = false;
@@ -256,6 +282,7 @@ export default function Operations() {
   }, [tick]);
 
   useEffect(() => setLimit(PAGE), [flt, q]);
+  useEffect(() => { setSel((s0) => { const ids = new Set(txs.map((t) => t.id)); const n = new Set([...s0].filter((id) => ids.has(id))); return n.size === s0.size ? s0 : n; }); }, [txs]);
 
   const accById = useMemo(() => Object.fromEntries(accounts.map((a) => [a.id, a])), [accounts]);
   const years = useMemo(() => {
@@ -317,9 +344,74 @@ export default function Operations() {
     });
   }
 
+  const selRows = txs.filter((t) => sel.has(t.id));
+  const allChecked = shown.length > 0 && shown.every((t) => sel.has(t.id));
+  const toggleOne = (id) => setSel((s0) => { const n = new Set(s0); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const toggleAll = () => setSel(allChecked ? new Set() : new Set(shown.map((t) => t.id)));
+  const chunks = (arr) => Array.from({ length: Math.ceil(arr.length / 100) }, (_, i) => arr.slice(i * 100, i * 100 + 100));
+
+  async function applyBatch() {
+    const rows = selRows;
+    if (!rows.length) return;
+    let patch;
+    if (batch.prop === 'category') patch = batch.value ? { category: batch.value, cat_source: 'manual' } : { category: null, cat_source: null };
+    else if (batch.prop === 'account') { if (!batch.value) return; patch = { account_id: batch.value }; }
+    else if (batch.prop === 'date') { if (!batch.value) return; patch = { date: batch.value }; }
+    else patch = { comment: batch.value.trim() || null };
+    const groups = new Map();
+    for (const t of rows) {
+      const before = snapshotOf(t, patch), k = JSON.stringify(before);
+      if (!groups.has(k)) groups.set(k, { before, ids: [] });
+      groups.get(k).ids.push(t.id);
+    }
+    setBusyBatch(true); setMsg('');
+    try {
+      const sb = getSupabase();
+      for (const c of chunks(rows.map((t) => t.id))) {
+        const { error } = await sb.from('transactions').update(patch).in('id', c);
+        if (error) throw error;
+      }
+      const ids = new Set(rows.map((t) => t.id));
+      setTxs((xs) => xs.map((x) => (ids.has(x.id) ? { ...x, ...patch } : x)));
+      pushUndo(`Modification de ${rows.length} opération(s)`, async () => {
+        for (const g of groups.values()) {
+          for (const c of chunks(g.ids)) {
+            const { error } = await getSupabase().from('transactions').update(g.before).in('id', c);
+            if (error) throw error;
+          }
+        }
+      });
+      setMsg(`${rows.length} opération(s) modifiée(s).`); setSel(new Set()); setBatch({ ...batch, value: '' });
+    } catch (e) { setMsg(friendly(e)); setTick((n) => n + 1); }
+    setBusyBatch(false);
+  }
+
+  async function deleteBatch() {
+    const rows = selRows;
+    if (!rows.length || !window.confirm(`Supprimer ${rows.length} opération(s) ?`)) return;
+    const entries = potData ? potData.entries.filter((e) => sel.has(e.transaction_id)) : [];
+    setBusyBatch(true); setMsg('');
+    try {
+      const sb = getSupabase();
+      for (const c of chunks(rows.map((t) => t.id))) {
+        const { error } = await sb.from('transactions').delete().in('id', c);
+        if (error) throw error;
+      }
+      const ids = new Set(rows.map((t) => t.id));
+      setTxs((xs) => xs.filter((x) => !ids.has(x.id)));
+      pushUndo(`Suppression de ${rows.length} opération(s)`, async () => {
+        for (const c of chunks(rows)) { const r = await getSupabase().from('transactions').insert(c); if (r.error) throw r.error; }
+        for (const c of chunks(entries)) { const r = await getSupabase().from('pot_entries').insert(c); if (r.error) throw r.error; }
+      });
+      setMsg(`${rows.length} opération(s) supprimée(s).`); setSel(new Set());
+    } catch (e) { setMsg(friendly(e)); setTick((n) => n + 1); }
+    setBusyBatch(false);
+  }
+
   const set = (p) => setFlt((f) => ({ ...f, ...p }));
-  const gridStyle = wide ? { gridTemplateColumns: [...order.map((k) => COLS[k][1]), '210px'].join(' '), gridTemplateAreas: 'none' } : undefined;
+  const gridStyle = wide ? { gridTemplateColumns: ['28px', ...order.map((k) => COLS[k][1]), '210px'].join(' '), gridTemplateAreas: 'none' } : undefined;
   const cell = (k) => (wide ? { order: order.indexOf(k), gridArea: 'auto' } : undefined);
+  const selStyle = wide ? { order: -1, gridArea: 'auto' } : undefined;
   const actStyle = wide ? { order: 9, gridArea: 'auto' } : undefined;
   const panelStyle = { order: 20 };
   const dropOn = (k) => {
@@ -378,6 +470,34 @@ export default function Operations() {
         {active && <button className="btn ghost sm" onClick={() => setFlt(EMPTY)}>Tout effacer</button>}
       </div>
 
+      {sel.size > 0 && (
+        <div className="batchbar">
+          <b>{sel.size} sélectionnée{sel.size > 1 ? 's' : ''}</b>
+          <select value={batch.prop} onChange={(e) => setBatch({ prop: e.target.value, value: '' })} aria-label="Propriété à modifier">
+            <option value="category">Catégorie</option>
+            <option value="account">Compte</option>
+            <option value="date">Date</option>
+            <option value="comment">Commentaire</option>
+          </select>
+          {batch.prop === 'category' && (
+            <select value={batch.value} onChange={(e) => setBatch({ ...batch, value: e.target.value })} aria-label="Catégorie">
+              <option value="">À catégoriser</option>
+              {categoryNames().map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
+          {batch.prop === 'account' && (
+            <select value={batch.value} onChange={(e) => setBatch({ ...batch, value: e.target.value })} aria-label="Compte">
+              <option value="">Choisir…</option>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          )}
+          {batch.prop === 'date' && <input type="date" value={batch.value} onChange={(e) => setBatch({ ...batch, value: e.target.value })} aria-label="Date" />}
+          {batch.prop === 'comment' && <input type="text" placeholder="Commentaire (vide = effacer)" value={batch.value} onChange={(e) => setBatch({ ...batch, value: e.target.value })} />}
+          <button className="btn sm" disabled={busyBatch} onClick={applyBatch}>Appliquer</button>
+          <button className="btn danger sm" disabled={busyBatch} onClick={deleteBatch}>Suppr.</button>
+          <button className="btn ghost sm" onClick={() => setSel(new Set())}>Désélectionner</button>
+        </div>
+      )}
       {msg && <div className="warn">{msg}</div>}
       {order.join() !== DEFAULT_ORDER.join() && <button className="btn ghost sm" style={{ marginBottom: 8 }} onClick={() => setOrder(DEFAULT_ORDER)}>Ordre des colonnes par défaut</button>}
       {state.error && <p className="err">{state.error}</p>}
@@ -390,8 +510,9 @@ export default function Operations() {
           {shown.length === 0 ? <p className="muted">Aucune opération avec ces filtres.</p> : (
             <>
               <div className="txhead" style={gridStyle}>
+                <span><input type="checkbox" checked={allChecked} onChange={toggleAll} aria-label="Tout sélectionner" /></span>
                 {order.map((k) => (
-                  <span key={k} draggable className={'draggable' + (overKey === k ? ' over' : '')} title="Glisse pour déplacer la colonne"
+                  <span key={k} draggable className={'draggable' + (overKey === k ? ' over' : '') + (k === 'amount' ? ' ra' : '')} title="Glisse pour déplacer la colonne"
                     onDragStart={() => setDragKey(k)} onDragOver={(e) => { e.preventDefault(); setOverKey(k); }}
                     onDragLeave={() => setOverKey(null)} onDrop={() => dropOn(k)} onDragEnd={() => { setDragKey(null); setOverKey(null); }}>
                     {COLS[k][0]}
@@ -405,6 +526,7 @@ export default function Operations() {
                   const saveDate = (nv) => { if (/^\d{4}-\d{2}-\d{2}$/.test(nv)) patchTx(t, { date: nv }); };
                   return (
                     <li key={t.id} className="txrow" style={gridStyle}>
+                      <span className="c-sel" style={selStyle}><input type="checkbox" checked={sel.has(t.id)} onChange={() => toggleOne(t.id)} aria-label="Sélectionner" /></span>
                       <Editable className="c-date muted" style={cell('date')} type="date" value={t.date} onSave={saveDate}
                         display={<>{dm}<span className="yr-inline">/{t.date.slice(0, 4)}</span></>} title="Double-clic pour modifier la date" />
                       <Editable className="c-year muted" style={cell('year')} type="date" value={t.date} onSave={saveDate} display={t.date.slice(0, 4)} title="Double-clic pour modifier la date" />
@@ -452,9 +574,10 @@ export default function Operations() {
         <TxModal tx={modal === 'new' ? null : modal} defaults={modal === 'new' ? defaultsFromFilters(flt) : null}
           accounts={accounts} onClose={() => setModal(null)} onSaved={onModalSaved} />
       )}
+      {veil && <div className="dropveil"><div>Dépose le fichier CSV pour l’importer</div></div>}
       {importing && (
-        <ImportPanel accounts={accounts} onClose={() => setImporting(false)}
-          onDone={(m) => { setImporting(false); setMsg(m); setFlt(EMPTY); setTick((n) => n + 1); }} />
+        <ImportPanel accounts={accounts} initialFile={importFile} onClose={() => { setImporting(false); setImportFile(null); }}
+          onDone={(m) => { setImporting(false); setImportFile(null); setMsg(m); setFlt(EMPTY); setTick((n) => n + 1); }} />
       )}
     </>
   );

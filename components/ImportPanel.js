@@ -12,7 +12,7 @@ import { Tag } from './Tag.js';
 import Modal from './Modal.js';
 
 // Import d'un CSV bancaire (Fortuneo, Crédit Agricole) ou du modèle GSheet (catégorie = colonne Motif, commentaire = colonne Note).
-export default function ImportPanel({ accounts, onDone, onClose }) {
+export default function ImportPanel({ accounts, initialFile, onDone, onClose }) {
   const [accountId, setAccountId] = useState(accounts[0] ? accounts[0].id : '');
   const [rules, setRules] = useState([]);
   const [parsed, setParsed] = useState(null);
@@ -20,16 +20,18 @@ export default function ImportPanel({ accounts, onDone, onClose }) {
   const [fileName, setFileName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [over, setOver] = useState(false);
 
   useEffect(() => { loadRules().then(setRules).catch(() => {}); }, []);
 
-  async function onFile(e) {
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
+  async function loadFile(f) {
     setError(''); setParsed(null); setKnown(null); setFileName(f.name);
     try { setParsed(parseImport(decodeBuffer(await f.arrayBuffer()))); }
     catch (err) { setError(err.message); }
   }
+  const onFile = (e) => { const f = e.target.files && e.target.files[0]; if (f) loadFile(f); };
+  // Fichier déposé sur la page : chargé dès l'ouverture de la fenêtre.
+  useEffect(() => { if (initialFile) loadFile(initialFile); }, [initialFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Doublons : empreintes déjà présentes sur ce compte, sur la plage de dates du fichier.
   useEffect(() => {
@@ -101,7 +103,13 @@ export default function ImportPanel({ accounts, onDone, onClose }) {
         <select value={accountId} onChange={(e) => setAccountId(e.target.value)} aria-label="Compte">
           {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.bank}{a.shared ? ' (commun)' : ''}</option>)}
         </select>
-        <input type="file" accept=".csv,text/csv" onChange={onFile} disabled={!accountId} />
+        <label className={'dropzone' + (over ? ' over' : '')}
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setOver(true); }} onDragLeave={() => setOver(false)}
+          onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) loadFile(f); }}>
+          <b>{fileName || 'Glisse un fichier CSV ici'}</b>
+          <span>ou clique pour parcourir</span>
+          <input type="file" accept=".csv,text/csv" onChange={onFile} disabled={!accountId} />
+        </label>
         <p className="hint" style={{ margin: 0 }}>Fortuneo, Crédit Agricole ou modèle GSheet (colonnes Date, Libellé, Montant, Crédit, Motif, Note). Les opérations déjà importées sont ignorées.</p>
         {error && <p className="err">{error}</p>}
         {parsed && (
